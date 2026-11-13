@@ -45,6 +45,7 @@
 *   **Runs on Servers**: Apps → Create Dynamic Spectra (also `createds`) can run on an SSH server (Run on = Server) inside the server's container or Python, directly or as a Slurm job for large sets. Only the machine that runs the engine needs python-casacore; Server mode needs paramiko here.
 *   **Inputs**: Accepts `.ms` and `.MS` folders, one Measurement Set per subband or a single multi-channel one.
 *   **Safe Outputs**: An existing FITS or PNG is never replaced unless "Replace existing output files (FITS and PNG) without asking" is ticked, and the dialog asks first. If some inputs fail, the rest is still written and the dialog reports how many failed.
+*   **Autocorrelations**: The rows of an antenna with itself are no longer averaged in with the baselines. With UV min at "No limit" or "Use all baselines" they were, and being the total power of one antenna they took the mean over. "Use only autocorrelations" (also `--autocorr`) makes the spectrum from them alone; only those rows are read. The FITS header says which was used (`AUTOCORR`) and how many autocorrelation rows there were (`NAUTOROW`).
 
 ### Radio Spectra
 *   **More Sources to Download**: The Radio Data Downloader now also gets OVRO-LWA spectra (only the time range asked for is read from its daily file) and the radio receivers of Wind/WAVES, STEREO/WAVES, Parker Solar Probe/FIELDS and Solar Orbiter/RPW from NASA's SPDF. They are written as FITS in the files' own units, with each mission's rules of use in the header.

@@ -678,7 +678,9 @@ def validate_params(p, summary=None):
     if not p.get("binwidth") or p["binwidth"] <= 0:
         err("binwidth", "The time bin width must be above zero.")
     uvmin, uvmax = p.get("uvmin", 0.0), p.get("uvmax", 0.0)
-    if uvmin < 0 or uvmax < 0:
+    if p.get("autocorr"):
+        pass  # no baselines to cut by their length
+    elif uvmin < 0 or uvmax < 0:
         err("uvmin", "The UV range can't be negative.")
     elif uvmax > 0 and uvmax <= uvmin:  # 0 means no limit on that side
         err("uvmax", "UV max must be larger than UV min (or 0 for no upper limit).")
@@ -748,8 +750,8 @@ def check_local_output(output):
 def build_engine_args(params):
     """The engine's command line (after the script) for ``params``, the same
     keys as remote_dynspec.submit: indir or ms, outfits, binwidth, ncpu, uvmin,
-    uvmax (0 = no limit), startfreq, endfreq, tstart, tend, pol, freqres,
-    chanavg (None = auto), chunkmb, saveplot, plotfile, overwrite."""
+    uvmax (0 = no limit), autocorr, startfreq, endfreq, tstart, tend, pol,
+    freqres, chanavg (None = auto), chunkmb, saveplot, plotfile, overwrite."""
     args = []
     if params.get("ms"):
         args += ["--ms"] + [str(m) for m in params["ms"]]
@@ -759,6 +761,8 @@ def build_engine_args(params):
     for key in ("binwidth", "ncpu", "uvmin", "uvmax"):
         if params.get(key) is not None:
             args += [f"--{key}", str(params[key])]
+    if params.get("autocorr"):
+        args.append("--autocorr")
     for key in ("startfreq", "endfreq", "tstart", "tend", "pol", "freqres"):
         if params.get(key) not in (None, ""):
             args += [f"--{key}", str(params[key])]
@@ -1425,12 +1429,16 @@ class DynamicSpectraDialog(QDialog):
         self.uvmax_spin = spin(0, 1e6, 500.0, 0, " lambda", special="No limit")
         grid.addWidget(self.uvmax_spin, 1, 3)
         self.uv_all_check = QCheckBox("Use all baselines (no UV cut)")
-        grid.addWidget(self.uv_all_check, 2, 0, 1, 4)
+        grid.addWidget(self.uv_all_check, 2, 0, 1, 2)
+        self.autocorr_check = QCheckBox("Use only autocorrelations")
+        grid.addWidget(self.autocorr_check, 2, 2, 1, 2)
         uvhint = self._hint(
             "Only baselines with lengths between these limits (in wavelengths) are "
             "used; 0 is no limit. The default, 130 to 500 lambda, is tuned for LOFAR "
             "solar data: short baselines see the whole Sun, so they keep the total "
-            "flux. For another array, set a range that fits its baselines or use all."
+            "flux. For another array, set a range that fits its baselines or use all. "
+            "Autocorrelations (an antenna with itself) are never mixed in with the "
+            "baselines; the spectrum can be made from them alone instead."
         )
         grid.addWidget(uvhint, 3, 0, 1, 4)
 
@@ -1612,7 +1620,8 @@ class DynamicSpectraDialog(QDialog):
             self.output_edit, self.output_browse_btn, self.plot_check,
             self.download_check, self.download_edit, self.download_browse_btn,
             self.now_btn, self.slurm_btn, self.binwidth_spin, self.pol_combo,
-            self.uvmin_spin, self.uvmax_spin, self.uv_all_check, self.startfreq_spin, self.endfreq_spin,
+            self.uvmin_spin, self.uvmax_spin, self.uv_all_check, self.autocorr_check,
+            self.startfreq_spin, self.endfreq_spin,
             self.tstart_edit, self.tend_edit, self.freqres_combo, self.chanavg_spin,
             self.ncpu_spin, self.adv_btn, self.chunk_spin, self.overwrite_check,
             self.container_edit, self.partition_combo, self.mem_spin, self.time_edit,
@@ -1639,6 +1648,8 @@ class DynamicSpectraDialog(QDialog):
             self.ncpu_spin: "Processes working in parallel. Auto uses what this machine or job offers.",
             self.chunk_spin: "Data block read at once by each process (memory is about 3 times this per process); lower it if memory is short.",
             self.uv_all_check: "Do not cut by baseline length at all (sends 0 for both limits).",
+            self.autocorr_check: "Make the spectrum from the autocorrelations alone: the total power each antenna "
+                                 "measures by itself. No baseline is used, so there is no UV range to set.",
             self.container_edit: "The Singularity/Apptainer image (.sif) with casacore on the server, or a python path. Remembered per server.",
             self.time_edit: "Wall-time limit asked from Slurm.",
             self.mem_spin: "Memory asked from Slurm (Default = the cluster's).",
@@ -1659,6 +1670,7 @@ class DynamicSpectraDialog(QDialog):
         self.output_edit.textEdited.connect(lambda _: setattr(self, "_output_touched", True))
         self.time_edit.textEdited.connect(lambda _: setattr(self, "_time_touched", True))
         self.uv_all_check.toggled.connect(self._uv_all_toggled)
+        self.autocorr_check.toggled.connect(self._uv_all_toggled)
         self.output_edit.textChanged.connect(self._update_output_hint)
         self.output_browse_btn.clicked.connect(self._browse_output)
         self.download_browse_btn.clicked.connect(self._browse_download)
@@ -1718,7 +1730,8 @@ class DynamicSpectraDialog(QDialog):
         self.uvmin_spin.setValue(num("uvmin", 130.0, float, 0.0, 1e6))
         self.uvmax_spin.setValue(num("uvmax", 500.0, float, 0.0, 1e6))
         self.uv_all_check.setChecked(bool(_get("uv_all", False, bool)))
-        self._uv_all_toggled(self.uv_all_check.isChecked())
+        self.autocorr_check.setChecked(bool(_get("autocorr", False, bool)))
+        self._uv_all_toggled()
         i = self.pol_combo.findData(_get("pol", "I"))
         self.pol_combo.setCurrentIndex(max(0, i))
         i = self.freqres_combo.findData(_get("freqres", "auto"))
@@ -1741,6 +1754,7 @@ class DynamicSpectraDialog(QDialog):
         _put("uvmin", self.uvmin_spin.value())
         _put("uvmax", self.uvmax_spin.value())
         _put("uv_all", self.uv_all_check.isChecked())
+        _put("autocorr", self.autocorr_check.isChecked())
         _put("pol", self.pol_combo.currentData())
         _put("freqres", self.freqres_combo.currentData())
         _put("chanavg", self.chanavg_spin.value())
@@ -1755,9 +1769,13 @@ class DynamicSpectraDialog(QDialog):
         _put("run_on", "server" if self._is_server() else "local")
         _put("last_data_server" if self._is_server() else "last_data_local", self.data_edit.text())
 
-    def _uv_all_toggled(self, on):
+    def _uv_all_toggled(self, on=None):
+        """The UV limits are there to set unless every baseline is used, or
+        none is (the autocorrelations alone)."""
+        auto = self.autocorr_check.isChecked()
+        self.uv_all_check.setEnabled(not auto)
         for w in (self.uvmin_spin, self.uvmax_spin):
-            w.setEnabled(not on)
+            w.setEnabled(not auto and not self.uv_all_check.isChecked())
 
     def _host_key(self):
         host = getattr(self._conn, "host", "") if self._conn is not None else ""
@@ -2516,7 +2534,8 @@ class DynamicSpectraDialog(QDialog):
         server = self._is_server()
         start = self.startfreq_spin.value()
         end = self.endfreq_spin.value()
-        all_uv = self.uv_all_check.isChecked()
+        autocorr = self.autocorr_check.isChecked()
+        all_uv = self.uv_all_check.isChecked() or autocorr  # (no baseline, no length to cut by)
         output = self.output_edit.text().strip()
         if output and not server:
             output = os.path.abspath(os.path.expanduser(output))
@@ -2528,6 +2547,7 @@ class DynamicSpectraDialog(QDialog):
             "binwidth": self.binwidth_spin.value(),
             "uvmin": 0.0 if all_uv else self.uvmin_spin.value(),  # 0 = no limit
             "uvmax": 0.0 if all_uv else self.uvmax_spin.value(),
+            "autocorr": autocorr,
             "startfreq": start if start > 0 else None,
             "endfreq": end if end > 0 else None,
             "tstart": self.tstart_edit.text().strip(),
@@ -2720,6 +2740,7 @@ class DynamicSpectraDialog(QDialog):
             "binwidth": p["binwidth"],
             "uvmin": p["uvmin"],
             "uvmax": p["uvmax"],
+            "autocorr": bool(p.get("autocorr")),
             "startfreq": p["startfreq"],
             "endfreq": p["endfreq"],
             "tstart": p["tstart"] or None,

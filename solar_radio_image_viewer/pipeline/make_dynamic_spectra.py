@@ -18,6 +18,11 @@ into one global time grid (bin width --binwidth) and into frequency columns.
 A uv bound of 0 (or less) is off; --uvmin 0 --uvmax 0 uses every baseline (and
 then UVW is not read at all).  The defaults 130 / 500 wavelengths are tuned for
 the LOFAR core-to-remote baselines; other arrays need their own values or 0 0.
+The rows of an antenna with itself (autocorrelations, ANTENNA1 = ANTENNA2) are
+not baselines and are left out: they are the total power of one antenna, far
+above the baselines' amplitudes, and a few of them in the mean would take it
+over.  --autocorr makes the spectrum from those rows alone instead (the uv
+range does not apply to them, and only they are read).
 Work is split in tasks (MS, row range) of at least about 16 MB of data, so one big
 MS keeps all CPUs busy as well as many small ones.
 
@@ -1120,7 +1125,13 @@ def _close_all():
 
 
 def _row_info(tb, task, start, n):
-    """TIME, usable-row mask, DATA_DESC_ID (or None) and time bin of rows start..start+n."""
+    """TIME, usable-row mask, DATA_DESC_ID (or None), time bin and the number
+    of usable autocorrelation rows of rows start..start+n.
+
+    The mask keeps the baselines (two different antennas), or with
+    task["autocorr"] the autocorrelations alone; the number counts the
+    autocorrelations among the rows that are usable otherwise, whichever way
+    (left out, or the ones used)."""
     t = tb.getcol("TIME", startrow=start, nrow=n)
     ok = np.ones(n, bool)
     ts, te = task["tsel"]
@@ -1135,7 +1146,10 @@ def _row_info(tb, task, start, n):
         ok &= np.isin(dd, list(task["dd"]))
     bins = bin_index(t, task["t0"], task["binwidth"])
     ok &= (bins >= 0) & (bins < task["nbins"])
-    return t, ok, dd, bins
+    auto = tb.getcol("ANTENNA1", startrow=start, nrow=n) == tb.getcol("ANTENNA2", startrow=start, nrow=n)
+    nauto = int((ok & auto).sum())
+    ok &= auto if task.get("autocorr") else ~auto
+    return t, ok, dd, bins, nauto
 
 
 def _unique_sorted(b):
@@ -1151,17 +1165,20 @@ def run_task(task):
 
     task keys: path, start, stop, datacol, dm, nchan_max, multi_dd, uniform, dd
     ({ddid: plan}), t0, binwidth, nbins, tsel, uv, chunk_bytes, has_flag,
-    has_flagrow, acc_bytes.  Result: {"blocks": {ddid: (b_first, cols, S, N)}, "stats": {...}}.
+    has_flagrow, acc_bytes, autocorr (optional: the autocorrelations alone).
+    Result: {"blocks": {ddid: (b_first, cols, S, N)}, "stats": {...}}.
     """
     tb = _open(task["path"])
     start, stop = task["start"], task["stop"]
     nrow = stop - start
     plans = task["dd"]
-    stats = {"samples": 0, "flagged": 0, "uvcut": 0, "rows": 0}
+    autocorr = bool(task.get("autocorr"))
+    stats = {"samples": 0, "flagged": 0, "uvcut": 0, "rows": 0, "autorows": 0}
     # first pass over the small columns: which time bins does this task touch?
     touched = []
     for cs in range(0, nrow, 2000000):
-        _, rowok, _, bins = _row_info(tb, task, start + cs, min(2000000, nrow - cs))
+        _, rowok, _, bins, nauto = _row_info(tb, task, start + cs, min(2000000, nrow - cs))
+        stats["autorows"] += nauto  # (counted here: this pass sees every row, also of a task with nothing to use)
         if rowok.any():
             touched.append(_unique_sorted(bins[rowok]))
     if not touched:
@@ -1177,7 +1194,8 @@ def run_task(task):
     local = {d: (np.zeros((nb, len(p["starts"]))), np.zeros((nb, len(p["starts"])), np.int64))
              for d, p in plans.items()}
     uvmin, uvmax = task["uv"]
-    use_uv = (uvmin is not None and uvmin > 0) or (uvmax is not None and uvmax > 0)
+    # (an autocorrelation has no uv distance to cut by)
+    use_uv = not autocorr and ((uvmin is not None and uvmin > 0) or (uvmax is not None and uvmax > 0))
     lofar = task["dm"].lower().startswith("lofar")
     # bytes per row read: data (8) + flag (1) per channel and correlation
     row_bytes = 9.0 * max((p["nchan"] * p["ncorr"]) if lofar else
@@ -1186,7 +1204,7 @@ def run_task(task):
     for cs in range(0, nrow, crows):
         ce = min(nrow, cs + crows)
         a0 = start + cs
-        t, ok, dd, bins = _row_info(tb, task, a0, ce - cs)
+        t, ok, dd, bins, _ = _row_info(tb, task, a0, ce - cs)
         if not ok.any():
             _COUNTER.add(ce - cs)
             continue
@@ -1199,7 +1217,10 @@ def run_task(task):
                 continue
             idx = None if (sel.all()) else np.flatnonzero(sel)
             ncorr, nchan = p["ncorr"], p["nchan"]
-            if idx is None or task["uniform"]:
+            # The autocorrelations are a few rows in every time slot (60 of 1830
+            # for 60 antennas): those rows alone are read, not the block
+            few = autocorr and idx is not None and 2 * len(idx) <= ce - cs
+            if (idx is None or task["uniform"]) and not few:
                 key = (p["c0"], p["c1"], tuple(p["corr_idx"]))
                 if key not in cube:
                     cube[key] = (
@@ -1211,7 +1232,7 @@ def run_task(task):
                 if idx is not None:
                     data = data[idx]
                     flag = flag[idx] if flag is not None else None
-            else:  # shapes differ between spectral windows: read this ddid's rows only
+            else:  # shapes differ between spectral windows, or few rows are wanted: read these rows only
                 rows = a0 + idx
                 data = _read_rows(tb, task["datacol"], rows, p["c0"], p["c1"], nchan, p["corr_idx"], ncorr, lofar)
                 flag = (_read_rows(tb, "FLAG", rows, p["c0"], p["c1"], nchan, p["corr_idx"], ncorr, lofar)
@@ -1291,6 +1312,7 @@ def make_tasks(infos, grid, args, ncpu):
                     "t0": t0, "binwidth": args["binwidth"], "nbins": nbins,
                     "tsel": (args["tstart"], args["tend"]),
                     "uv": (args["uvmin"], args["uvmax"]), "uvstep": args["uvstep"],
+                    "autocorr": bool(args.get("autocorr")),
                     "chunk_bytes": chunk_bytes, "acc_bytes": acc_bytes,
                     "has_flag": i["has_flag"], "has_flagrow": i["has_flagrow"],
                 })
@@ -1400,10 +1422,11 @@ def compute(infos, args, rep):
         "ntime": nbins, "nfreq": ncol, "datacol": datacols,
         "t0_mjds": t0, "binwidth": args["binwidth"], "pol": args["pol"],
         "fmin_mhz": float(col_freq[0] / 1e6), "fmax_mhz": float(col_freq[-1] / 1e6),
+        "autocorr": bool(args.get("autocorr")),
     })
     S = np.zeros((nbins, ncol), np.float64)
     N = np.zeros((nbins, ncol), np.int64)
-    stats = {"samples": 0, "flagged": 0, "uvcut": 0, "rows": 0}
+    stats = {"samples": 0, "flagged": 0, "uvcut": 0, "rows": 0, "autorows": 0}
     failed = {}  # path -> {"path", "name", "error", "tasks", "rows"} (first error kept)
     succeeded = set()  # paths with at least one finished task
     shared = None
@@ -1483,12 +1506,25 @@ def compute(infos, args, rep):
     stats["chanavg"] = factor
     stats["datacols"] = datacols
     stats["telescope"] = next((i["telescope"] for i in used if i.get("telescope")), "")
+    stats["autocorr"] = bool(args.get("autocorr"))
     first = next(iter(failed.values()), None)
     if first is not None and not succeeded:  # every input failed completely
         raise EngineError("all %d inputs failed, first cause: %s: %s" % (len(used), first["name"], first["error"]))
     if (N > 0).sum() == 0:
         extra = " (%d inputs failed, first cause: %s)" % (len(failed), first["error"]) if first else ""
+        if stats["autocorr"] and not stats["autorows"]:
+            raise EngineError("no autocorrelations in the data (no row has the same antenna twice): the spectrum "
+                              "can only be made from the baselines (without --autocorr; in the window, "
+                              "\"Use only autocorrelations\" unticked)" + extra)
+        if stats["autocorr"]:
+            raise EngineError("no valid samples (every autocorrelation is flagged)" + extra)
+        if stats["autorows"] and not stats["rows"]:
+            raise EngineError("the data holds autocorrelations only (no row has two different antennas): make the "
+                              "spectrum from them with --autocorr (in the window, \"Use only autocorrelations\")" + extra)
         raise EngineError("no valid samples (everything flagged or outside the uv range)" + extra)
+    if stats["autorows"] and not stats["autocorr"]:
+        rep.log("left out %d autocorrelation rows (an antenna with itself); --autocorr, in the window "
+                "\"Use only autocorrelations\", makes the spectrum from them instead" % stats["autorows"])
     times = t0 + (np.arange(nbins) + 0.5) * args["binwidth"]
     return times, finalize(S, N), col_freq, stats
 
@@ -1512,7 +1548,8 @@ def write_fits(times_s, spectrum, freq_hz, outfits, params, stats, overwrite=Fal
     hdu = fits.PrimaryHDU(np.ascontiguousarray(spectrum, dtype=np.float32))
     hdr = hdu.header
     hdr["EXTNAME"] = "DYNAMIC_SPECTRUM"
-    hdr["BUNIT"] = ("Amplitude", "uncalibrated |visibility|")
+    autocorr = bool(params.get("autocorr"))
+    hdr["BUNIT"] = ("Amplitude", "uncalibrated |autocorrelation|" if autocorr else "uncalibrated |visibility|")
     bw = float(params["binwidth"])
     hdr["DATE-OBS"] = (Time((times_s[0] - bw / 2) / 86400.0, format="mjd", scale="utc").isot, "start of first bin (UTC)")
     hdr["DATE-END"] = (Time((times_s[-1] + bw / 2) / 86400.0, format="mjd", scale="utc").isot, "end of last bin (UTC)")
@@ -1527,6 +1564,9 @@ def write_fits(times_s, spectrum, freq_hz, outfits, params, stats, overwrite=Fal
     hdr["BINWIDTH"] = (float(params["binwidth"]), "time bin width (s)")
     hdr["UVMIN"] = (float(params["uvmin"] or 0.0), "min uv distance (wavelengths), 0 = off")
     hdr["UVMAX"] = (float(params["uvmax"] or 0.0), "max uv distance (wavelengths), 0 = off")
+    hdr["AUTOCORR"] = (autocorr, "T = autocorrelations only, F = baselines only")
+    hdr["NAUTOROW"] = (int(stats.get("autorows", 0)),
+                       "autocorrelation rows used" if autocorr else "autocorrelation rows left out")
     hdr["POL"] = (str(params["pol"]), "polarisation (I = mean of parallel hands)")
     hdr["NMS"] = (int(stats["nms"]), "number of Measurement Sets used")
     hdr["NFAILED"] = (int(stats["failed"]), "inputs that failed (cells are NaN)")
@@ -1614,7 +1654,7 @@ def plot_format(path):
     return ext
 
 
-def make_plot(times_s, spectrum, freq_hz, path=None, show=False, fmt=None):
+def make_plot(times_s, spectrum, freq_hz, path=None, show=False, fmt=None, title="Dynamic Spectrum"):
     """Save and/or show the dynamic spectrum (matplotlib is imported here only).
 
     Saving always uses the Agg backend (works without a display).  Showing needs
@@ -1651,7 +1691,7 @@ def make_plot(times_s, spectrum, freq_hz, path=None, show=False, fmt=None):
                              shading="auto", cmap="viridis", vmin=vmin, vmax=vmax)
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel("Frequency (MHz)")
-    ax.set_title("Dynamic Spectrum")
+    ax.set_title(title)
     fig.colorbar(mesh, label="Amplitude")
     ax.xaxis.set_major_formatter(DateFormatter("%Y-%m-%d\n%H:%M:%S"))
     fig.autofmt_xdate()
@@ -1666,7 +1706,7 @@ def make_plot(times_s, spectrum, freq_hz, path=None, show=False, fmt=None):
 DEFAULTS = dict(
     binwidth=1.0, ncpu=0, uvmin=130.0, uvmax=500.0, startfreq=None, endfreq=None,
     tstart=None, tend=None, pol="I", freqres="auto", chanavg=0, chunkmb=128.0,
-    datacolumn="DATA", maxrows=0, uvstep=UV_STEP_S,
+    datacolumn="DATA", maxrows=0, uvstep=UV_STEP_S, autocorr=False,
 )
 
 
@@ -1695,6 +1735,9 @@ def check_options(args, rep):
     args["ncpu"] = int(args["ncpu"] or 0)
     if args["ncpu"] < 0:
         raise EngineError("ncpu must be 0 (automatic) or more", 2)
+    args["autocorr"] = bool(args.get("autocorr"))
+    if args["autocorr"]:  # nothing to cut by: an autocorrelation has no uv distance
+        args["uvmin"] = args["uvmax"] = 0.0
     for k in ("uvmin", "uvmax"):  # 0 (or less) = no limit on that side
         if args[k] is not None and args[k] < 0:
             rep.warn("%s=%g is negative: treated as no limit (use 0)" % (k, args[k]))
@@ -1760,12 +1803,13 @@ def run(inputs, outfits, rep, saveplot=False, plotfile=None, showplot=False,
     stats["failed_inputs"] = [{"path": p, "error": e} for p, e in failed] + stats["failed_inputs"]
     rep.info({"stage": "writing"})
     write_fits(times, spec, freq, outfits, args, stats, overwrite=overwrite)
+    title = "Dynamic Spectrum (autocorrelations)" if args["autocorr"] else "Dynamic Spectrum"
     if pf:
         rep.info({"stage": "plotting"})
         tmp = temp_name(pf)
         _TEMPS.add(tmp)
         try:
-            make_plot(times, spec, freq, tmp, False, fmt=pfmt)
+            make_plot(times, spec, freq, tmp, False, fmt=pfmt, title=title)
             publish_file(tmp, pf, overwrite)
             rep.log("plot saved as %s" % pf)
         except Exception as e:
@@ -1781,11 +1825,12 @@ def run(inputs, outfits, rep, saveplot=False, plotfile=None, showplot=False,
               "failed_inputs": stats["failed_inputs"], "failed_rows": stats["failed_rows"],
               "nms": stats["nms"], "seconds": round(stats["seconds"], 2), "samples": stats["samples"],
               "flagged": stats["flagged"], "uvcut": stats["uvcut"],
+              "autocorr": stats["autocorr"], "autorows": stats["autorows"],
               "filled_fraction": float(np.isfinite(spec).mean())})
     if showplot:
         def show():
             try:
-                make_plot(times, spec, freq, None, True)
+                make_plot(times, spec, freq, None, True, title=title)
             except Exception as e:
                 rep.warn("plot not shown: %s" % e)
 
@@ -1803,7 +1848,7 @@ def run_dynamic_spectra(indir, outfits, binwidth=1.0, ncpu=10, uvmin=130.0, uvma
 
     Python API of the command line tool (see the module docstring); extra
     keyword arguments are the other options (pol, freqres, chanavg, tstart,
-    tend, chunkmb, datacolumn).  ncpu is limited to the CPUs available here.
+    tend, chunkmb, datacolumn, autocorr).  ncpu is limited to the CPUs available here.
     Returns the FITS path, or None on failure (logged).
     """
     rep = Reporter(protocol=False, logger=logger)
@@ -1827,6 +1872,9 @@ def build_parser():
                    help="worker processes (0 = all CPUs this machine / job allows; with --list: at most 4 when 0)")
     p.add_argument("--uvmin", type=float, default=130.0, help="minimum uv distance in wavelengths (0 = off; default %g is tuned for LOFAR)" % DEFAULTS["uvmin"])
     p.add_argument("--uvmax", type=float, default=500.0, help="maximum uv distance in wavelengths (0 = off; --uvmin 0 --uvmax 0 uses all baselines)")
+    p.add_argument("--autocorr", action="store_true",
+                   help="make the spectrum from the autocorrelations alone (rows of an antenna with itself, "
+                        "left out otherwise); the uv range is not used")
     p.add_argument("--startfreq", type=float, default=None, help="lowest frequency in MHz")
     p.add_argument("--endfreq", type=float, default=None, help="highest frequency in MHz")
     p.add_argument("--tstart", default=None, help="start time: ISO (2023-03-10T10:00:00) or MJD seconds")

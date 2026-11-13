@@ -738,6 +738,7 @@ ENGINE_OPTIONS = {
     "chunkmb": "--chunkmb",
     "datacolumn": "--datacolumn",
     "uvstep": "--uvstep",
+    "autocorr": "--autocorr",
     "saveplot": "--saveplot",
     "plotfile": "--plotfile",
     "overwrite": "--overwrite",
@@ -774,6 +775,8 @@ def _engine_args(params, overwrite, ncpu):
             except (TypeError, ValueError):
                 raise ValueError("chanavg must be a whole number: %r" % (v,))
         args.append("%s=%s" % (ENGINE_OPTIONS[name], _check_text(v, name)))
+    if p.get("autocorr"):
+        args.append(ENGINE_OPTIONS["autocorr"])
     out_png = None
     if p.get("saveplot"):
         out_png = _abs_path(p["plotfile"], "plotfile") if p.get("plotfile") \
