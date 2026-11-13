@@ -6,6 +6,8 @@ and solar radii preset circles.
 """
 
 import logging
+import math
+
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -195,8 +197,14 @@ def _draw_one_shape(tab, ax, s):
             alpha=alpha,
         )
     elif shape_type == "rectangle":
+        # Turned about its centre (a Rectangle turns about its corner)
+        t = math.radians(angle)
+        corner = (
+            cx - (w / 2.0) * math.cos(t) + (h / 2.0) * math.sin(t),
+            cy - (w / 2.0) * math.sin(t) - (h / 2.0) * math.cos(t),
+        )
         patch = Rectangle(
-            (cx - w / 2.0, cy - h / 2.0),
+            corner,
             w,
             h,
             angle=angle,

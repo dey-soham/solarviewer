@@ -42,6 +42,7 @@ from ..tools.preview import contrast_colors, halo_pen, measure_preview
 from ..ui.activity import begin_activity
 from ..ui.busy import busy
 from ..ui.widgets import kicker, kicker_row, link_button, rule, toggle_row
+from ..processing.sky_view import snap as _snap
 from ..processing.sky_view import unit_scales as _unit_scales
 from ..processing.sky_view import wcs_kind
 
@@ -225,12 +226,6 @@ def format_value(value):
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value:.4g}"
-
-
-def _snap(value, within=1e-3):
-    """``value`` as the integer it is within ``within`` of, else itself."""
-    nearest = round(value)
-    return float(nearest) if abs(value - nearest) < within else value
 
 
 def region_in(leader, region, pane):

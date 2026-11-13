@@ -874,9 +874,10 @@ except Exception:
         self._file_list_index = new_index
 
         # What the step keeps of how the image is looked at: the view (zoom
-        # and pan), the sky frame and unit it was converted to, and with
-        # the range lock on the display (read here: a converted image is
-        # loaded twice, as the file is and then converted)
+        # and pan, and with it where the regions and annotations lie), the
+        # sky frame and unit it was converted to, and with the range lock
+        # on the display (read here: a converted image is loaded twice, as
+        # the file is and then converted)
         frame, unit, unit_first = self._converted_view()
         self._step_view = self._view_shown(turned=frame is not None)
         self._step_display = self._shown_display() if self.range_locked else None
@@ -902,12 +903,17 @@ except Exception:
             if shown:
                 self._convert_as_before(frame, unit, unit_first)
         finally:
-            self._step_view = None
+            view, self._step_view = self._step_view, None
             self._step_display = None
+            self._marks_carried = None
+            # (still on the file as it is: its conversion did not come)
+            unconverted, self._passing_image = getattr(self, "_passing_image", False), False
             if held:
                 self.canvas.setUpdatesEnabled(True)
                 self.canvas.update()
 
+        if unconverted and shown:
+            self._settle_marks(view)
         self._update_nav_buttons()
         if shown:
             self.show_status_message(self.with_range_note(f"{done} {os.path.basename(new_path)}"))

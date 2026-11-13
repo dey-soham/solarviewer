@@ -826,6 +826,11 @@ class RoiStatsMixin:
         """After a plot or a change of tool: the regions painted again, and
         measured again if the image changed under them (those no longer on
         the image go)."""
+        if getattr(self, "_passing_image", False):
+            # A file loaded as it is on the way to its conversion, unseen
+            # (a step through converted images): the regions are placed
+            # on, and measured in, the image it becomes
+            return
         data = self.current_image_data
         if self.regions and self._measured_data is not data:
             for region in list(self.regions):

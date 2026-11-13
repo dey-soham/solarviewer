@@ -22,7 +22,15 @@ from ..processing.contour_layers import contour_layer_settings
 from .canvas import READOUT_HINT
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
-from ..processing.sky_view import KeptView, limits_for, wcs_kind
+from ..processing.sky_view import (
+    PASSING,
+    KeptView,
+    limits_for,
+    marks_map,
+    moved_boxes,
+    snap,
+    wcs_kind,
+)
 from ..processing.fits_io import is_fits, readable_image_path
 from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import busy
@@ -629,6 +637,8 @@ class RenderingMixin:
             limits = limits_for(kept_view, data.shape[:2], wcs_obj, header)
             if limits is not None:
                 stored_xlim, stored_ylim = limits
+        # ...and what is marked on it, where that lies on this one
+        self._carry_marks(kept_view, data.shape[:2], wcs_obj, header)
 
         ax, im = self._draw_image_axes(
             wcs_obj,
@@ -844,6 +854,112 @@ class RenderingMixin:
             wcs,
             dict(getattr(self, "current_header", None) or {}),
         )
+
+    def _carry_marks(self, view, shape, wcs, header):
+        """What is marked on the image the pane showed (``view``'s: the
+        regions and the shape, text and arrow annotations, all placed in
+        pixels) goes where it lies on the image drawn now, of ``shape``,
+        ``wcs`` and ``header``: sky_view's marks_map. Once for a view; an
+        image only passed through leaves the marks for the next."""
+        self._passing_image = False
+        if view is None or getattr(self, "_marks_carried", None) is view:
+            return
+        try:
+            move = marks_map(view, shape, wcs, header)
+            if move is PASSING:
+                self._passing_image = True
+                return
+            self._marks_carried = view
+            if move is not None:
+                self._move_marks(move)
+        except Exception:
+            logger.warning("Could not keep the regions and annotations on the sky", exc_info=True)
+            self._marks_carried = view
+
+    def _move_marks(self, move):
+        """The regions and annotations where ``move`` (a marks_map) puts
+        them, turned and sized as the pixels under them are. One that
+        cannot be placed stays as it is."""
+        regions = list(getattr(self, "regions", []))
+        boxes = [
+            ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, region.angle)
+            for region in regions
+            for x1, y1, x2, y2 in [region.corners]
+        ]
+        for region, box in zip(regions, moved_boxes(move, boxes)):
+            if box is not None:
+                cx, cy, width, height, angle = box
+                region.corners = tuple(
+                    snap(value)
+                    for value in (cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2)
+                )
+                region.angle = angle
+
+        shapes = list(getattr(self, "shape_annotations", []))
+        boxes = []
+        for shape in shapes:
+            # (a size in arcsec stays: only how it lies changes)
+            sized = shape.get("unit", "pixels") != "arcsec"
+            width = shape["width"] if sized else 10.0
+            height = shape.get("height", shape["width"]) if sized else 10.0
+            turns = shape["type"] in ("ellipse", "rectangle")
+            boxes.append((
+                shape["center_x"],
+                shape["center_y"],
+                width,
+                height if turns else width,
+                shape.get("angle", 0.0) if turns else 0.0,
+            ))
+        for shape, box in zip(shapes, moved_boxes(move, boxes)):
+            if box is None:
+                continue
+            cx, cy, width, height, angle = box
+            shape["center_x"], shape["center_y"] = cx, cy
+            if shape.get("unit", "pixels") != "arcsec":
+                shape["width"] = width
+                if "height" in shape:
+                    shape["height"] = height if shape["type"] in ("ellipse", "rectangle") else width
+            if shape["type"] == "square" and abs(angle) % 90 > 1e-6:
+                # A square is drawn upright: turned, it is a rectangle
+                shape["type"] = "rectangle"
+                shape["height"] = shape["width"]
+            if shape["type"] in ("ellipse", "rectangle"):
+                shape["angle"] = angle
+
+        texts = list(getattr(self, "text_annotations", []))
+        arrows = list(getattr(self, "arrow_annotations", []))
+        points = (
+            [(text, "x", "y") for text in texts]
+            + [(arrow, "x1", "y1") for arrow in arrows]
+            + [(arrow, "x2", "y2") for arrow in arrows]
+        )
+        if points:
+            xs, ys = move([mark[kx] for mark, kx, _ky in points], [mark[ky] for mark, _kx, ky in points])
+            for (mark, kx, ky), x, y in zip(points, xs, ys):
+                if np.isfinite(x) and np.isfinite(y):
+                    mark[kx], mark[ky] = float(x), float(y)
+
+    def _settle_marks(self, view):
+        """A step through converted images ended on the file as it is (its
+        conversion failed, or was cancelled): what was marked on the
+        converted image before it goes where it lies on this one, and the
+        regions are measured."""
+        ax = self._nav_axes()
+        if ax is None or view is None:
+            return
+        try:
+            move = marks_map(
+                view._replace(turned=False),
+                self.current_image_data.shape[:2],
+                getattr(ax, "wcs", None),
+                getattr(self, "current_header", None) or {},
+            )
+            if callable(move):
+                self._move_marks(move)
+        except Exception:
+            logger.warning("Could not keep the regions and annotations on the sky", exc_info=True)
+        self.init_region_editor(ax)
+        self.schedule_plot()
 
     def _get_wcs_object(self, fits_flag, header, csys, summary):
         """Build (and cache per current_wcs) a 2D astropy WCS for plotting."""
