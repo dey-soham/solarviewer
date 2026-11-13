@@ -149,6 +149,7 @@ class Plan:
     by_closest: bool = False  # filled one request at a time, not from the JPX list
     scale_correction: float = 1.0
     closest: Optional[hv.Closest] = None  # the first frame's archive record
+    nearest_outside: Optional[datetime] = None  # the nearest image left out for lying outside the range
 
     @property
     def downloads(self) -> List[Frame]:
@@ -269,11 +270,27 @@ def plan_frames(
             return plan
     if step_s:
         rows = [(wanted, nearest_time(times, wanted), None) for wanted in grid(start, end, step_s)]
+        rows = _in_range(plan, rows, source.cadence)
     else:
-        rows = [(observed, observed, None) for observed in times]
+        rows = _in_range(plan, [(observed, observed, None) for observed in times], 0)
     plan.frames = _frames_of(rows, source, view)
     _fill_geometry(plan, check)
     return plan
+
+
+def _in_range(plan: Plan, rows, slack_s) -> list:
+    """The ``(wanted, observed, image_id)`` rows whose image was observed in
+    the plan's range. ``slack_s`` is allowed over each end: the image nearest
+    a slot at the edge may sit just outside it. An image further out is the
+    archive having nothing there, and is left out; the plan keeps the time of
+    the nearest one (``nearest_outside``)."""
+    slack = timedelta(seconds=max(0, int(slack_s)))
+    lo, hi = plan.start - slack, plan.end + slack
+    kept = [row for row in rows if lo <= row[1] <= hi]
+    left = [row[1] for row in rows if not lo <= row[1] <= hi]
+    if left:
+        plan.nearest_outside = min(left, key=lambda t: plan.start - t if t < plan.start else t - plan.end)
+    return kept
 
 
 def _short(times, message, source, start, end, step_s) -> bool:
@@ -297,7 +314,7 @@ def _plan_by_closest(plan: Plan, slots: List[datetime], check, problem: str = ""
     plan's message is Helioviewer's note on the list this replaces, if any;
     ``problem``, why there was no list, only if this fails too."""
     rows = []
-    first: Optional[hv.Closest] = None
+    records = {}
     for wanted in slots:
         if check:
             check()
@@ -308,12 +325,15 @@ def _plan_by_closest(plan: Plan, slots: List[datetime], check, problem: str = ""
             continue
         if found.date is None:
             continue
-        if first is None:
-            first = found
+        records.setdefault(found.date, found)
         rows.append((wanted, found.date, found.id))
+    answered = bool(rows)
+    # The archive's nearest image may be hours or weeks from an empty range
+    rows = _in_range(plan, rows, plan.source.cadence)
+    first: Optional[hv.Closest] = records[rows[0][1]] if rows else None
     plan.frames = _frames_of(rows, plan.source, plan.view)
     plan.by_closest = True
-    if not rows and not plan.message:
+    if not answered and not plan.message:
         plan.message = problem or "Helioviewer gave no images for this range"
     if first is not None:
         plan.closest = first

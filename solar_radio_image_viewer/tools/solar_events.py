@@ -153,7 +153,7 @@ class SolarEventsMixin:
                     mark = ("Radio image", when)
                     self.show_status_message(f"Opening the Helioviewer browser around {when:%Y-%m-%d %H:%M:%S} UTC")
                 else:
-                    self.show_status_message("The image has no observation time: the browser opens on today")
+                    self.show_status_message("The image has no observation time: the browser opens on the last range used")
                 name = getattr(self, "imagename", None) or ""
                 open_helioviewer(
                     self,

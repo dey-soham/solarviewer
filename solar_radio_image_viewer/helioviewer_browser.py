@@ -1,5 +1,5 @@
 """
-The Helioviewer browser: solar images around a time, from Helioviewer's
+The Helioviewer browser: solar images of a time range, from Helioviewer's
 archive (or OVRO-LWA's daily movie), shown one frame at a time with a
 coordinate frame over them and a time band under them.
 
@@ -55,7 +55,7 @@ from . import helioviewer_view as hvw
 from .helioviewer_data import FAILED, LOADING, MOST_WIDTH, PLANNED, READY, Frame, Plan, View, plan_frames
 from .helioviewer_export import HelioviewerExportMixin, difference_image
 from .helioviewer_loader import FrameLoader, memory_note
-from .helioviewer_timeline import EventsFetch, FrameBand, Playback, offset_text
+from .helioviewer_timeline import EventsFetch, FrameBand, HelioAxis, Playback, offset_text
 from .noaa_events import cache as noaa_cache
 from .noaa_events.day_axis import GOES_COLOUR, GUTTER
 from .noaa_events.widgets import ElidedLabel, set_source_note, source_note
@@ -73,8 +73,18 @@ logger = logging.getLogger(__name__)
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 TIME_QT_FORMAT = "yyyy-MM-dd HH:mm:ss"
-# (label, compact label, seconds each side of the time; None: the whole UTC day)
-SPANS = (("±15 min", "±15m", 900), ("±30 min", "±30m", 1800), ("±1 h", "±1h", 3600), ("±3 h", "±3h", 10800), ("Day", "Day", None))
+CUSTOM = "custom"  # the span of a range typed into Start and End
+# (label, compact label, seconds each side of the time; None: the whole UTC day; CUSTOM: as typed)
+SPANS = (
+    ("±15 min", "±15m", 900),
+    ("±30 min", "±30m", 1800),
+    ("±1 h", "±1h", 3600),
+    ("±3 h", "±3h", 10800),
+    ("Day", "Day", None),
+    ("Custom", "Custom", CUSTOM),
+)
+MOST_RANGE = timedelta(hours=HelioAxis.MAX_SPAN)  # the longest range: what the time band can show
+BOTH = "both"  # Start and End were both typed into
 # (label, compact label, seconds between frames; None: every image the archive has)
 STEPS = (("Every image", "All", None), ("1 min", "1m", 60), ("5 min", "5m", 300), ("15 min", "15m", 900), ("1 h", "1h", 3600))
 DIFF_MODES = ("None", "Running", "Base", "Base = radio time")
@@ -214,15 +224,40 @@ def far_note(at: datetime, nearest: Optional[datetime]) -> str:
     return f"Nearest image is {size} {'earlier' if offset < 0 else 'later'} than asked"
 
 
+def middle(start: datetime, end: datetime) -> datetime:
+    """The time halfway from ``start`` to ``end``, to the second."""
+    return (start + (end - start) / 2).replace(microsecond=0)
+
+
+def outside_note(start: datetime, end: datetime, nearest: Optional[datetime]) -> str:
+    """``The nearest image is 35 d earlier, at 2024-04-09 16:15 UTC``: where
+    the archive's nearest image is when it lies outside the range, else ""."""
+    if nearest is None or start <= nearest <= end:
+        return ""
+    offset = (nearest - start).total_seconds() if nearest < start else (nearest - end).total_seconds()
+    return f"The nearest image is {offset_text(abs(offset))[1:]} {'earlier' if offset < 0 else 'later'}, at {nearest:%Y-%m-%d %H:%M} UTC"
+
+
+def range_problem(start: datetime, end: datetime) -> str:
+    """Why ``start`` to ``end`` cannot be loaded, or ""."""
+    if end <= start:
+        return "The end must be after the start"
+    if end - start > MOST_RANGE:
+        length = offset_text((end - start).total_seconds())[1:]
+        return f"A range can be {MOST_RANGE.total_seconds() / 3600:g} hours at most: this one is {length}"
+    return ""
+
+
 # ---------------------------------------------------------------- the opener
 
 
 @dataclass
 class Target:
-    """What an opener knows: the time to centre on, the seconds each side,
-    the radio image's field ``(x1, y1, x2, y2)`` in true arcsec, its mark on
-    the band ``(label, time)``, the entry to select, and an OVRO-LWA day
-    whose movie loads at once."""
+    """What an opener knows: the time to centre on, the seconds each side
+    (or the range itself, ``start`` to ``end``), the radio image's field
+    ``(x1, y1, x2, y2)`` in true arcsec, its mark on the band ``(label,
+    time)``, the entry to select, and an OVRO-LWA day whose movie loads at
+    once."""
 
     at: Optional[datetime] = None
     span: Optional[int] = None
@@ -231,13 +266,16 @@ class Target:
     instrument: Optional[str] = None
     movie_day: Optional[date] = None
     mark_tip: str = ""
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
 
 
-def open_helioviewer(parent=None, at=None, span=None, fov=None, mark=None, instrument=None, movie_day=None, mark_tip=""):
+def open_helioviewer(parent=None, at=None, span=None, fov=None, mark=None, instrument=None, movie_day=None, mark_tip="", start=None, end=None):
     """Open the browser on ``at`` (a naive UTC datetime), ``span`` seconds each
-    side, boxing ``fov`` and marking ``mark``; with ``at`` the images load at
-    once. Returns the window, shown; it frees its frames when closed."""
-    target = Target(at=at, span=span, fov=fov, mark=mark, instrument=instrument, movie_day=movie_day, mark_tip=mark_tip)
+    side, or on the range ``start`` to ``end``, boxing ``fov`` and marking
+    ``mark``; with a time or a range the images load at once. Returns the
+    window, shown; it frees its frames when closed."""
+    target = Target(at=at, span=span, fov=fov, mark=mark, instrument=instrument, movie_day=movie_day, mark_tip=mark_tip, start=start, end=end)
     browser = HelioviewerBrowser(parent, target)
     browser.setAttribute(Qt.WA_DeleteOnClose)
     browser.show()
@@ -484,10 +522,10 @@ class SourceDelegate(QStyledItemDelegate):
 
 
 class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
-    """Images around a time: the header picks the time, span and step, the
-    list the instrument, Load finds the frames and downloads them nearest
-    the time first; the band seeks, the footer plays, compares, reframes,
-    zooms and exports."""
+    """Images of a time range: the header picks its Start and End (a span
+    fills them about a time) and the step, the list the instrument, Load
+    finds the frames and downloads them, nearest the time of interest first;
+    the band seeks, the footer plays, compares, reframes, zooms and exports."""
 
     time_chosen = pyqtSignal(object)  # the user chose a time on the band (a datetime)
 
@@ -519,6 +557,13 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self._closing = False
         self._close_after_export = False
         self._load_at: Optional[datetime] = None
+        # The range: what Start and End last held, what the user typed since,
+        # and the time of interest in it (its frame is the one shown first)
+        self._filled = (None, None)
+        self._length: Optional[timedelta] = None
+        self._typed = None  # the one field typed into, BOTH, or None
+        self._focus: Optional[datetime] = None
+        self._go_to: Optional[datetime] = None
         # Threads
         self.loader = loader if loader is not None else FrameLoader(parent=self)
         self.loader.frame_ready.connect(self._on_frame_ready)
@@ -587,22 +632,17 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         row = QHBoxLayout()
         row.setContentsMargins(SPACE_L, 0, SPACE_L, 0)
         row.setSpacing(SPACE_S)
-        row.addWidget(self._day_button("fd_back.svg", "Day before (Alt+Left)", -1))
-        self.time_edit = QLineEdit()
-        self.time_edit.setToolTip("The time the images are around, UTC: YYYY-MM-DD HH:MM:SS")
-        self.time_edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
-        font = QFont(self.time_edit.font())
-        font.setFamily(MONO_FAMILY)
-        self.time_edit.setFont(font)
-        self.time_edit.setMinimumWidth(190)
-        self.time_edit.setMaximumWidth(230)
-        attach_date_picker(self.time_edit, lambda text: self._time_committed())
-        self.time_edit.editingFinished.connect(self._time_committed)
-        self.time_edit.returnPressed.connect(self.load)
-        row.addWidget(self.time_edit)
-        row.addWidget(self._day_button("fd_forward.svg", "Day after (Alt+Right)", 1))
+        row.addWidget(self._step_button("fd_back.svg", "Earlier by the length of the range (Alt+Left)", -1))
+        self.start_edit = self._time_field("Start", "The images start here, UTC: YYYY-MM-DD HH:MM:SS")
+        row.addWidget(self.start_edit)
+        self.to_label = QLabel("–")
+        self.to_label.setObjectName("Hint")
+        row.addWidget(self.to_label)
+        self.end_edit = self._time_field("End", "The images end here, UTC: YYYY-MM-DD HH:MM:SS")
+        row.addWidget(self.end_edit)
+        row.addWidget(self._step_button("fd_forward.svg", "Later by the length of the range (Alt+Right)", 1))
         self.from_image_btn = QPushButton("From image")
-        self.from_image_btn.setToolTip("Take the time from the image open in SolarViewer")
+        self.from_image_btn.setToolTip("Centre the range on the time of the image open in SolarViewer")
         self.from_image_btn.clicked.connect(self.from_image)
         self.from_image_btn.setVisible(self.parent() is not None)
         row.addWidget(self.from_image_btn)
@@ -610,8 +650,11 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.span_label = QLabel("Span")
         self.span_label.setObjectName("Hint")
         row.addWidget(self.span_label)
-        self.span_group, self.span_buttons = self._choice(SPANS, "The images come from this far each side of the time")
-        self.span_group.buttonClicked.connect(lambda _b: self._time_committed())
+        self.span_group, self.span_buttons = self._choice(SPANS, "This far each side of the middle of the range, or of the time just typed")
+        self.span_buttons[-2].setToolTip("The whole UTC day of the middle of the range, or of the time just typed")
+        self.span_buttons[-1].setToolTip("The range as typed into Start and End")
+        self.span_group.buttonToggled.connect(self._span_toggled)
+        self.span_group.buttonClicked.connect(self._span_clicked)
         row.addWidget(segmented(self.span_buttons))
         row.addSpacing(SPACE_XS)
         self.step_label = QLabel("Step")
@@ -654,14 +697,35 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self._note_link_slot = None
         return top
 
-    def _day_button(self, icon, tip, days):
+    def _time_field(self, name, tip):
+        """Start or End: a time typed or picked, Return loads."""
+        field = QLineEdit()
+        field.setAccessibleName(f"{name} time, UTC")
+        field.setToolTip(tip)
+        field.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
+        font = QFont(field.font())
+        font.setFamily(MONO_FAMILY)
+        field.setFont(font)
+        # Room for a whole time and the calendar button, and little more:
+        # there are two of them (polished first: the theme sets the font's size)
+        field.ensurePolished()
+        room = field.fontMetrics().horizontalAdvance("0000-00-00 00:00:00") + 40
+        field.setMinimumWidth(room)
+        field.setMaximumWidth(room + 32)
+        # The calendar shades the days to the range's other end
+        attach_date_picker(field, lambda _text: self._fields_committed(), band=lambda: self._other_end(field))
+        field.editingFinished.connect(self._fields_committed)
+        field.returnPressed.connect(self.load)
+        return field
+
+    def _step_button(self, icon, tip, direction):
         button = QPushButton()
         button.setObjectName("IconOnlyNBGButton")
         button.setIconSize(QSize(18, 18))
         button.setMinimumWidth(ICON_BUTTON_LEAST)
         button.setToolTip(tip)
         themed(button, lambda palette: button.setIcon(QIcon(themed_icon(icon))))
-        button.clicked.connect(lambda: self.step_day(days))
+        button.clicked.connect(lambda: self.step_range(direction))
         return button
 
     def _choice(self, rows, tip):
@@ -833,6 +897,9 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.frame_retry_link = link_button("Retry", self.retry_failed)
         self.frame_retry_link.hide()
         links.addWidget(self.frame_retry_link)
+        self.go_link = link_button("Go to that image", self.go_to_nearest)
+        self.go_link.hide()
+        links.addWidget(self.go_link)
         links.addStretch()
         column.addLayout(links)
         column.addStretch()
@@ -1012,8 +1079,8 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             ("Ctrl+E", lambda: self.export_animation()),
             ("Ctrl+L", self.load),
             ("Ctrl+F", lambda: (self.filter_edit.setFocus(), self.filter_edit.selectAll())),
-            ("Alt+Left", lambda: self.step_day(-1)),
-            ("Alt+Right", lambda: self.step_day(1)),
+            ("Alt+Left", lambda: self.step_range(-1)),
+            ("Alt+Right", lambda: self.step_range(1)),
             ("Esc", self._escape),
             ("Ctrl+Q", self.close),
         ):
@@ -1057,6 +1124,27 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             except (TypeError, ValueError):
                 pass
 
+    def _reopen(self):
+        """The last range loaded; with none, the last span about now."""
+        start = parse_field(str(self.settings.value(KEY.format("start"), "") or ""))
+        end = parse_field(str(self.settings.value(KEY.format("end"), "") or ""))
+        if start is None or end is None or range_problem(start, end):
+            self.set_time(datetime.now(timezone.utc).replace(tzinfo=None, second=0, microsecond=0))
+            return
+        custom = self.settings.value(KEY.format("custom"), False, type=bool)
+        if custom:
+            self._check_choice(self.span_group, SPANS, CUSTOM)
+        self.set_range(start, end, focus=None if custom else middle(start, end))
+
+    def _remember(self, start, end):
+        """The range and span of a load, for the next time the browser opens."""
+        span = self.span_seconds()
+        if span != CUSTOM:
+            self.settings.setValue(KEY.format("span"), span if span is not None else "")
+        self.settings.setValue(KEY.format("custom"), span == CUSTOM)
+        self.settings.setValue(KEY.format("start"), start.strftime(TIME_FORMAT))
+        self.settings.setValue(KEY.format("end"), end.strftime(TIME_FORMAT))
+
     @staticmethod
     def _check_choice(group, rows, value):
         for i, (_label, _short, held) in enumerate(rows):
@@ -1065,19 +1153,28 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
                 return
 
     def _apply_target(self):
-        """The opener's time, span, mark and instrument."""
+        """The opener's time or range, mark and instrument; with neither a
+        time nor a range, the last range loaded."""
         target = self.target
-        at = target.at
-        if at is None and target.movie_day is not None:
-            at = datetime.combine(target.movie_day, time(12))
+        presets = [row[2] for row in SPANS if isinstance(row[2], int)]
+        if target.start is not None and target.end is not None:
+            self._check_choice(self.span_group, SPANS, CUSTOM)
+            self.set_range(target.start, target.end, focus=target.at)
+        elif target.at is not None and target.span is not None and target.span not in presets:
+            # A span no preset has is kept as asked for, not moved to the nearest one
+            self._check_choice(self.span_group, SPANS, CUSTOM)
+            half = timedelta(seconds=target.span)
+            self.set_range(target.at - half, target.at + half, focus=target.at)
+        elif target.at is not None:
+            if target.span is not None:
+                self._check_choice(self.span_group, SPANS, target.span)
+            self.set_time(target.at)
+        elif target.movie_day is not None:
+            # The whole day, until the movie gives its first and last frames
             self._check_choice(self.span_group, SPANS, None)
-        if at is None:
-            at = datetime.now(timezone.utc).replace(tzinfo=None, second=0, microsecond=0)
-        if target.span is not None:
-            # The span first: the time sets the band's range from it
-            nearest = min((row for row in SPANS if row[2] is not None), key=lambda row: abs(row[2] - target.span))
-            self._check_choice(self.span_group, SPANS, nearest[2])
-        self.set_time(at)
+            self.set_time(datetime.combine(target.movie_day, time(12)))
+        else:
+            self._reopen()
         if target.mark is not None:
             label, when = target.mark
             tip = f"{target.mark_tip} · {when:%Y-%m-%d %H:%M:%S} UTC" if target.mark_tip else ""
@@ -1166,20 +1263,66 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         set_tone(self.summary_label, tone)
         self.retry_link.setVisible(retry)
 
-    # ------------------------------------------------------------ the time
+    # ------------------------------------------------------------ the range
 
-    def at_time(self) -> Optional[datetime]:
-        """The time in the field, or None (and a note) if it does not read."""
-        when = parse_field(self.time_edit.text())
-        if when is None:
-            self.say("Enter the time as YYYY-MM-DD HH:MM:SS, UTC")
-            self.time_edit.setFocus()
-            self.time_edit.selectAll()
-        return when
+    def _fields(self) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """What Start and End read as (None for one that does not)."""
+        return parse_field(self.start_edit.text()), parse_field(self.end_edit.text())
+
+    def _other_end(self, field) -> Optional[datetime]:
+        start, end = self._fields()
+        return end if field is self.start_edit else start
+
+    def range_fields(self) -> Optional[Tuple[datetime, datetime]]:
+        """The range in Start and End, or None (and a note, the field at
+        fault selected) when it cannot be loaded."""
+        start, end = self._fields()
+        for field, when, name in ((self.start_edit, start, "start"), (self.end_edit, end, "end")):
+            if when is None:
+                self._refuse(field, f"Enter the {name} as YYYY-MM-DD HH:MM:SS, UTC")
+                return None
+        problem = range_problem(start, end)
+        if problem:
+            self._refuse(self.end_edit, problem)
+            return None
+        return start, end
+
+    def _refuse(self, field, text):
+        self.say(text)
+        field.setFocus()
+        field.selectAll()
+
+    def set_range(self, start: datetime, end: datetime, focus: Optional[datetime] = None):
+        """Start and End as given; the span control is left as it is.
+        ``focus`` is the time of interest in the range: a load shows its
+        frame first, and a span goes around it."""
+        start, end = start.replace(microsecond=0), end.replace(microsecond=0)
+        self.start_edit.setText(start.strftime(TIME_FORMAT))
+        self.end_edit.setText(end.strftime(TIME_FORMAT))
+        self._filled = (start, end)
+        self._typed = None
+        self._focus = focus
+        if end > start:
+            self._length = end - start
+        self._range_changed()
 
     def set_time(self, when: datetime):
-        self.time_edit.setText(when.strftime(TIME_FORMAT))
-        self._time_committed()
+        """The range the span makes about ``when``, the time of interest."""
+        when = when.replace(microsecond=0)
+        self.set_range(*self.range_about(when), focus=when)
+
+    def range_about(self, at: datetime) -> Tuple[datetime, datetime]:
+        """The range the span makes about ``at``: so far each side, the whole
+        UTC day, or (Custom) as long as the range is now."""
+        span = self.span_seconds()
+        if span is None:
+            start = datetime.combine(at.date(), time())
+            return start, start + timedelta(days=1)
+        if span == CUSTOM:
+            length = self._length or timedelta(hours=2)
+            start = at - timedelta(seconds=int(length.total_seconds() // 2))
+            return start, start + length
+        return at - timedelta(seconds=span), at + timedelta(seconds=span)
 
     @staticmethod
     def _time_of(field):
@@ -1187,25 +1330,107 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         value = QDateTime.fromString(field.text().strip() + " UTC", TIME_QT_FORMAT + " t")
         return value.toUTC() if value.isValid() else value
 
-    def _time_committed(self):
-        when = parse_field(self.time_edit.text())
-        if when is None:
+    def _take_typed(self) -> bool:
+        """What the user typed into Start and End since they were last
+        filled. One field alone is a time a span can go around; when it
+        crosses the other end, that end moves along and the range keeps its
+        length. False when nothing readable changed."""
+        fields = (self.start_edit, self.end_edit)
+        now = self._fields()
+        changed = [field for field, when, was in zip(fields, now, self._filled) if when is not None and when != was]
+        if not changed:
+            return False
+        start, end = now
+        one = changed[0] if len(changed) == 1 else None
+        self._typed = one if one is not None and self._typed in (None, one) else BOTH
+        if one is not None and start is not None and end is not None and end <= start and self._length:
+            try:
+                if one is self.start_edit:
+                    end = start + self._length
+                else:
+                    start = end - self._length
+            except OverflowError:
+                pass
+            else:
+                moved = "End" if one is self.start_edit else "Start"
+                self.say(f"{moved} moved along: the range is still {cadence_text(self._length.total_seconds())} long")
+        for field, when in zip(fields, (start, end)):
+            if when is not None:
+                field.setText(when.strftime(TIME_FORMAT))  # as it was understood
+        self._filled = (start, end)
+        if start is not None and end is not None:
+            if end > start:
+                self._length = end - start
+            if self._focus is not None and not start <= self._focus <= end:
+                self._focus = None  # the time of interest is no longer in the range
+        return True
+
+    def _fields_committed(self):
+        """Start or End was typed into or picked: the span is the user's own."""
+        if not self._take_typed():
             return
-        self._refresh_tree_dates(when.date())
-        if not self.frames and not self.loading:
-            # The band shows the range the next Load would cover
-            self.band.set_range(*self.time_range(when))
+        self._check_choice(self.span_group, SPANS, CUSTOM)
+        self._range_changed()
+
+    def _span_toggled(self, button, checked):
+        """A span chosen (by a click or by the code) fills Start and End about the time."""
+        if not checked or SPANS[self.span_group.id(button)][2] == CUSTOM:
+            return
+        self._take_typed()
+        at = self._centre()
+        if at is not None:
+            self.set_time(at)
+
+    def _span_clicked(self, button):
+        if SPANS[self.span_group.id(button)][2] == CUSTOM:
+            self.start_edit.setFocus()
+            self.start_edit.selectAll()
+
+    def _centre(self) -> Optional[datetime]:
+        """The time a span goes around: the one time just typed, else the
+        time of interest, else the middle of the range."""
+        start, end = self._fields()
+        if self._typed is self.start_edit and start is not None:
+            return start
+        if self._typed is self.end_edit and end is not None:
+            return end
+        if start is None or end is None:
+            return start if start is not None else end
+        if self._focus is not None and start <= self._focus <= end:
+            return self._focus
+        return middle(start, end)
+
+    def _range_changed(self):
+        """After Start or End changed: the list dims by the new dates, and
+        with nothing loaded the band shows the range the next Load covers."""
+        self._dim_by_range()
+        start, end = self._fields()
+        if start is None or end is None:
+            return
+        problem = range_problem(start, end)
+        if problem:
+            self.say(problem)
+        elif not self.frames and not self.loading:
+            self.band.set_range(start, end)
             self._show_empty()
 
-    def step_day(self, days):
-        when = parse_field(self.time_edit.text())
-        if when is None:
-            self.at_time()
+    def _dim_by_range(self):
+        start, end = self._fields()
+        if start is not None or end is not None:
+            self._refresh_tree_dates((start or end).date(), (end or start).date())
+
+    def step_range(self, direction):
+        """The range moved by its own length, earlier (-1) or later (1)."""
+        self._fields_committed()
+        got = self.range_fields()
+        if got is None:
             return
+        start, end = got
+        move = direction * (end - start)
         try:
-            self.set_time(when + timedelta(days=days))
+            self.set_range(start + move, end + move, focus=None if self._focus is None else self._focus + move)
         except OverflowError:
-            self.say(f"There is no date {'before' if days < 0 else 'after'} {when:%Y-%m-%d}")
+            self.say(f"There is no date {'before' if direction < 0 else 'after'} {(start if direction < 0 else end):%Y-%m-%d}")
 
     def from_image(self):
         when = pane_time(self.parent())
@@ -1215,19 +1440,19 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.set_time(when)
         self.say(f"Time taken from the image: {when:%Y-%m-%d %H:%M:%S} UTC")
 
-    def span_seconds(self) -> Optional[int]:
+    def go_to_nearest(self):
+        """The range had no image: it moves to the archive's nearest one, and loads."""
+        if self._go_to is None:
+            return
+        self.set_time(self._go_to)
+        self.load()
+
+    def span_seconds(self):
+        """The span chosen: seconds each side, None for the day, or CUSTOM."""
         return SPANS[self.span_group.checkedId()][2]
 
     def step_seconds(self) -> Optional[int]:
         return STEPS[self.step_group.checkedId()][2]
-
-    def time_range(self, at: datetime) -> Tuple[datetime, datetime]:
-        """The range the span makes about ``at`` (Day: the whole UTC day)."""
-        span = self.span_seconds()
-        if span is None:
-            start = datetime.combine(at.date(), time())
-            return start, start + timedelta(days=1)
-        return at - timedelta(seconds=span), at + timedelta(seconds=span)
 
     # ------------------------------------------------------------ the instruments
 
@@ -1284,17 +1509,15 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             self._add_lwa_group()
         self.tree.expandAll()
         self._size_columns()
-        when = parse_field(self.time_edit.text())
-        if when is not None:
-            self._refresh_tree_dates(when.date())
+        self._dim_by_range()
         self._filter_tree(self.filter_edit.text())
         if not self.tree.selectedItems():
             wanted = self.target.instrument or self.settings.value(KEY.format("instrument"), DEFAULT_INSTRUMENT)
             self.select_named(wanted) or self.select_named(DEFAULT_INSTRUMENT)
         if self.tree.selectedItems():
             self.tree.scrollToItem(self.tree.selectedItems()[0])
-        if self.target.at is not None and self.plan is None and not self.loading and not self.lwa_mode:
-            QTimer.singleShot(0, self.load)  # opened on a time: its images come at once
+        if (self.target.at is not None or self.target.start is not None) and self.plan is None and not self.loading and not self.lwa_mode:
+            QTimer.singleShot(0, self.load)  # opened on a time or a range: its images come at once
 
     def _size_columns(self):
         """The three columns in the list's width: the name column as wide as
@@ -1348,13 +1571,17 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             for j in range(group.childCount()):
                 yield group, group.child(j)
 
-    def _refresh_tree_dates(self, day: date):
-        """Instruments without images of ``day`` are dimmed, with when they have them."""
+    def _refresh_tree_dates(self, first: date, last: Optional[date] = None):
+        """Instruments without images from ``first`` to ``last`` (the days
+        of the range) are dimmed, with when they have them."""
+        last = first if last is None else last
         for _group, item in self._items():
             source = item.data(0, SOURCE_ROLE)
             if not isinstance(source, catalog.Source):
                 continue
-            note = source.date_note(day)
+            # Dimmed only when the whole range is before the archive, or after it
+            before, after = source.date_note(last), source.date_note(first)
+            note = before if before.startswith("from") else after if after.startswith("to") else ""
             item.setData(0, DIM_ROLE, bool(note))
             item.setData(1, DIM_ROLE, bool(note))
             item.setData(2, DIM_ROLE, bool(note))
@@ -1512,18 +1739,21 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
     # ------------------------------------------------------------ loading
 
     def load(self):
-        """Find the images around the time and download them, nearest first."""
-        at = self.at_time()
-        if at is None:
+        """Find the images of the range and download them, those nearest the
+        time of interest first (the first ones, when the range has none)."""
+        self._fields_committed()  # Return in a field loads before the field says it was edited
+        got = self.range_fields()
+        if got is None:
             return
+        start, end = got
         source = self.selected_source()
         if source is None:
             self.say("Choose an instrument first")
             self.tree.setFocus()
             return
-        self.settings.setValue(KEY.format("span"), self.span_seconds() if self.span_seconds() is not None else "")
+        self._remember(start, end)
         self.settings.setValue(KEY.format("step"), self.step_seconds() if self.step_seconds() is not None else "")
-        start, end = self.time_range(at)
+        at = self._focus if self._focus is not None and start <= self._focus <= end else None
         self._stop_everything()
         self._load_at = at
         self.retry_link.hide()
@@ -1606,21 +1836,28 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self._load_goes(plan.start, plan.end)
         self._fetch_events(plan.start, plan.end)
         if not plan.frames:
-            self.set_summary(f"No {source.name} images between {span_text(plan.start, plan.end)}" + (f" · {plan.message}" if plan.message else ""), tone="warning")
+            # Where the nearest image is, and a way to it
+            where = outside_note(plan.start, plan.end, plan.nearest_outside)
+            parts = [f"No {source.name} images between {span_text(plan.start, plan.end)}", where, plan.message]
+            self.set_summary(" · ".join(part for part in parts if part), tone="warning")
             self._enable_transport(False)
-            self._show_message(f"Helioviewer has no {source.name} images in this range.")
+            self._show_message(
+                f"Helioviewer has no {source.name} images in this range." + (f" {where}." if where else ""),
+                go_to=plan.nearest_outside if where else None,
+            )
             return
-        nearest = plan.nearest(at)
+        # With no time of interest in the range, the frames show from the first
+        nearest = plan.nearest(at) if at is not None else plan.frames[0]
         summary = plan_summary(source.name, plan, self.loader.memory_bytes)
-        far = far_note(at, nearest.observed if nearest is not None else None)
+        far = far_note(at, nearest.observed) if at is not None else ""
         self.set_summary(f"{summary} · {far}" if far else summary, tone="warning" if far else None)
         self._enable_transport(True)
         self.loading = True
         self.begin_job("frames", f"Downloading 0 of {len(plan.downloads)}", self.cancel_loading)
         self.loader.start(plan, at=at)
-        self.band.set_current(nearest.index if nearest is not None else 0)
+        self.band.set_current(nearest.index)
         if self.current is None:
-            self.show_frame(nearest.index if nearest is not None else 0)
+            self.show_frame(nearest.index)
         self.full_field_link.setVisible(self.region is not None)
         self._fit_labels()
 
@@ -1630,7 +1867,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             self.load()
             return
         plan = self.plan
-        retry = RetryPlan(source=plan.source, start=plan.start, end=plan.end, step_s=plan.step_s, view=plan.view, frames=plan.frames, message=plan.message, by_closest=plan.by_closest, scale_correction=plan.scale_correction, closest=plan.closest)
+        retry = RetryPlan(source=plan.source, start=plan.start, end=plan.end, step_s=plan.step_s, view=plan.view, frames=plan.frames, message=plan.message, by_closest=plan.by_closest, scale_correction=plan.scale_correction, closest=plan.closest, nearest_outside=plan.nearest_outside)
         for frame in plan.frames:
             if frame.state == FAILED:
                 frame.state, frame.error = PLANNED, ""
@@ -1840,10 +2077,16 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
                 self.show_frame(nearest.index)
 
     def _on_lwa_range(self, loader, first, last):
-        """One day's movie: the time becomes its middle, the band its range."""
+        """One day's movie: Start and End become its first and last frames
+        (so the next Load asks for what is shown), the band its range."""
         if not self._current_lwa(loader):
             return
-        self.time_edit.setText((first + (last - first) / 2).replace(microsecond=0).strftime(TIME_FORMAT))
+        start = first.replace(microsecond=0)
+        end = last.replace(microsecond=0) + timedelta(seconds=1 if last.microsecond else 0)
+        if end > start:
+            self._check_choice(self.span_group, SPANS, CUSTOM)
+            self.set_range(start, end, focus=self._focus)
+            self._remember(start, end)
         self.band.set_range(first, last)
 
     def _on_lwa_frame(self, loader, index, image):
@@ -1971,9 +2214,12 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         lines.append(frame.url)
         return "\n".join(lines)
 
-    def _show_message(self, text, spinner=None, details=None, retry=False):
+    def _show_message(self, text, spinner=None, details=None, retry=False, go_to=None):
         """The well's message page: ``text``, a spinner with ``spinner``'s
-        text, Show details… for ``details``, and Retry."""
+        text, Show details… for ``details``, Retry, and a way to the image
+        at ``go_to`` (the nearest one, when the range has none)."""
+        self._go_to = go_to
+        self.go_link.setVisible(go_to is not None)
         self.message_label.setText(text)
         self.message_label.setVisible(bool(text))
         if spinner:
@@ -1988,11 +2234,12 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.well.setCurrentWidget(self.message)
 
     def _show_empty(self):
-        when = parse_field(self.time_edit.text())
-        around = f" around {when:%H:%M} UTC" if when is not None else ""
-        self._show_message(f"Choose an instrument and press Load for images{around}.")
+        start, end = self._fields()
+        valid = start is not None and end is not None and not range_problem(start, end)
+        when = f" from {span_text(start, end)}" if valid else ""
+        self._show_message(f"Choose an instrument and press Load for images{when}.")
         if not self.summary_label.text():
-            self.set_summary("Pick an instrument, a time and a span, then press Load.")
+            self.set_summary("Pick an instrument and a time range, then press Load.")
 
     def _show_frame_error(self):
         """Show details…: the error's text, in the app's error dialog (asked for, so not in the way)."""
@@ -2236,17 +2483,20 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
     def _fit_labels(self):
         """Each bar shortens its labels when its full ones would not fit the
         window, so nothing is ever cut off: the footer first (it is the
-        wider), then the header too, when the band also drops its flare lane.
-        The bars do not size the window (they would hold it at their full
-        labels); the window itself stops where the short ones end, measured
-        once they are in place."""
+        wider), then the header too; under ``NARROW_WIDTH`` the band also
+        drops its flare lane. The bars do not size the window (they would
+        hold it at their full labels); the window itself stops where the
+        short ones end."""
         width = self.width()
-        header_full = self._bar_widths(self.header, self.span_buttons + self.step_buttons, [self.span_label, self.step_label], self._compact)[0]
+        # The header's short width is taken before its labels change: its
+        # segments sit in frames of their own, and the row only learns their
+        # new widths with the next layout pass
+        header_full, header_short = self._bar_widths(self.header, self.span_buttons + self.step_buttons, [self.span_label, self.step_label], self._compact)
         footer_full = self._bar_widths(self.footer, self._footer_buttons(), [self.fps_label], self._footer_compact)[0]
         self._set_compact(header_full > width or width < NARROW_WIDTH, footer_full > width)
-        header_short = self._bar_widths(self.header, self.span_buttons + self.step_buttons, [self.span_label, self.step_label], self._compact)[1]
         footer_short = self._bar_widths(self.footer, self._footer_buttons(), [self.fps_label], self._footer_compact)[1]
         self.setMinimumWidth(max(header_short, footer_short, 0))
+        self.band.set_compact(width < NARROW_WIDTH)
 
     def _set_compact(self, compact, footer=None):
         footer = compact if footer is None else (footer or compact)
@@ -2260,7 +2510,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.span_label.setVisible(not compact)
         self.step_label.setVisible(not compact)
         self.fps_label.setVisible(not footer)
-        self.band.set_compact(compact)
 
     @staticmethod
     def _label(button, short):
