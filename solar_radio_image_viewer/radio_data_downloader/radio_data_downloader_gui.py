@@ -182,6 +182,21 @@ def bursts_question(days):
     return lambda: [b for day in days for b in rdd.radio_bursts(day)]
 
 
+def spectrum_viewer(widget):
+    """The SolarViewer window that shows a spectrum file in the Dynamic
+    Spectrum Viewer for ``widget``: the main window itself, or the one a
+    window opened from it (Solar Activity) belongs to. None without one: the
+    downloader, or Solar Activity, run on its own.
+
+    Solar Activity has an ``open_spectrum`` too, which enlarges one of its
+    own plots; the main window is the one that also opens files."""
+    while widget is not None:
+        if hasattr(widget, "open_spectrum") and hasattr(widget, "open_path"):
+            return widget
+        widget = widget.parent() if isinstance(widget, QObject) else None
+    return None
+
+
 # ------------------------------------------------------------------ window
 class RadioDataDownloaderGUI(QDialog):
     """The Radio Data Downloader window."""
@@ -195,7 +210,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.setMinimumSize(820, 600)
         fit_to_screen(self, 820, 600)
         self.setModal(False)
-        self.viewer = parent if hasattr(parent, "open_spectrum") else None
+        self.viewer = spectrum_viewer(parent)
         self.initial_datetime = initial_datetime
         self.settings = QSettings("SolarViewer", "SolarViewer")
         self.download_worker = None

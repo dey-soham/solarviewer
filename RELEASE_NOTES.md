@@ -9,6 +9,8 @@
 *   **Measuring**: Mouse pan and zoom pause while the Ruler or Profile tool is measuring.
 *   **Keyboard Shortcuts** (F1): The list is read from the menus, so it shows exactly the shortcuts that work, plus the image's keys and mouse gestures.
 *   **Conventional Shortcuts**: Ctrl+S now saves the figure (Ctrl+E still works). Export Sub-Image moved to Ctrl+Shift+S, Export as FITS to Ctrl+Shift+F and Add Arrow to Ctrl+Shift+A.
+*   **Zoom Kept**: The part of the sky in view stays in view when stepping to the next image ([ and ]), changing the unit, and switching between RA/Dec and Solar XY.
+*   **Regions and Annotations on the Sky**: Regions and annotations keep their place on the sky across the RA/Dec and Solar XY switch.
 
 ### Opening Images
 *   **One Open Item**: File → Open Image (Ctrl+O) opens FITS files and CASA images alike, as do the contour, video and phase-shift dialogs.
@@ -21,6 +23,9 @@
 *   **Colour Range Fixes**: Constant or fully masked maps (e.g. Lfrac/Vfrac/PANG below threshold) no longer keep the previous product's colour range, and **Reload Image** after a Stokes change now resets the range.
 *   **LASCO Presets**: LASCO presets now use the LASCO colormaps; the menu offers separate C2 and C3 presets.
 *   **Faster Loading**: Only the planes a Stokes product needs are read, not the whole cube.
+*   **Reset**: Reset, by the intensity range, puts back the range, stretch, gamma and colormap the image opened with.
+*   **Keep for Next Images**: Holds the intensity range while stepping through a time series; an image in another unit or Stokes product is still scaled afresh.
+*   **Range Histogram**: The histogram widens as a marker is pushed past its edge and comes back once the marker is let go, so a marker dragged far out by accident is easy to place again. Double-click it for the image's whole range.
 
 ### Stokes Products
 *   **Planes by Label**: Stokes planes are found by their labels. On an image with only I and V, V is shown (it used to appear as Q), and a missing plane is named in a clear message.
@@ -38,10 +43,32 @@
 *   **Inputs**: Accepts `.ms` and `.MS` folders, one Measurement Set per subband or a single multi-channel one.
 *   **Safe Outputs**: An existing FITS or PNG is never replaced unless "Replace existing output files (FITS and PNG) without asking" is ticked, and the dialog asks first. If some inputs fail, the rest is still written and the dialog reports how many failed.
 
+### Radio Spectra
+*   **More Sources to Download**: The Radio Data Downloader now also gets OVRO-LWA spectra (only the time range asked for is read from its daily file) and the radio receivers of Wind/WAVES, STEREO/WAVES, Parker Solar Probe/FIELDS and Solar Orbiter/RPW from NASA's SPDF. They are written as FITS in the files' own units, with each mission's rules of use in the header.
+*   **Logarithmic Frequency Axis**: In the Dynamic Spectrum Viewer, View → Frequency axis offers Automatic, Linear and Logarithmic. Automatic is logarithmic where the channels span more than a decade and crowd toward the low end (the spacecraft receivers), so the lowest channels are no longer squeezed out of the picture. The choice is remembered.
+*   **kHz**: Spectra below 1 MHz read in kHz on the axis, in the hover readout and in drift rates, and can now be zoomed.
+*   **Gaps**: Channels that widen steadily are drawn joined; the upper ones used to be stripes with blank gaps between them. A band or a time with no data is still left blank.
+*   **Open Spectrum from Solar Activity**: A spectrum downloaded through Solar Activity's "Get e-CALLISTO FITS…" opens in the Dynamic Spectrum Viewer when done; it used to fail with a line in the log.
+
+### Helioviewer Browser
+*   **Start and End**: The browser takes a Start and an End time (UTC). The span buttons set the range about its middle, Custom keeps it as typed, and the arrows (Alt+Left, Alt+Right) move it by its own length. Frames outside the range are left out.
+*   **Nearest Image**: A range without images says how far off the nearest one is, and offers to go there.
+*   **Last Range**: With no image time to start from, the browser reopens on the last range used.
+
+### Updates
+*   **Every Kind of Install**: Help → Check for updates updates SolarViewer the way it was installed: a release with pip or uv (also in a conda environment), an install from a git URL from the same URL, and a git checkout with `git pull --ff-only`. The command is shown before it runs.
+*   **Honest Results**: The dialog says what was done. An installer that ends well without changing the installed version is reported as not having updated.
+*   **What Is New**: The release notes from your version to the new one (for a checkout, the new commits) are shown before updating.
+*   **Startup Check**: "Check for updates when SolarViewer starts" (also in Preferences) turns the startup check off, and "Skip this version" stops the announcement of that version.
+
+### Installing on a Mac
+*   **Apple Silicon**: `pip install solarviewer` no longer installs `python-casacore` on macOS, where it had to be compiled and usually failed; everything installed is ready-built (use Python 3.12). Only the Calibration Table Visualizer and Create Dynamic Spectra with Run on = This computer need it: they say so when it is missing, and INSTALLATION.md shows how to take it from conda-forge.
+
 ### Batch Dialogs and Servers
 *   **Responsive Batches**: Format, unit and coordinate conversion and the phase shift run in worker processes: the window stays responsive, and Abort stops at once.
 *   **Output Names**: Unit conversion no longer names its output `conv_a.fits.fits`, and full-Stokes coordinate conversion no longer writes all four planes to one file when the name has no extension.
 *   **SSH Host Keys**: The server's key is checked against `~/.ssh/known_hosts` and the servers trusted in SolarViewer. A new server's fingerprint is shown for you to confirm before any password is sent, and a changed key is refused.
+*   **Reconnecting**: A lost server connection is tried again after growing waits (10 seconds to 5 minutes) rather than every 5 seconds, and not at all once the server refuses the login: repeated refused logins can get an address banned on a shared server.
 
 ### Knowing What Is Going On
 *   **Busy Pill**: Anything that takes more than a moment says what it is doing in a small pill low in the window, with a count where one is known. It keeps moving even while the window is held up (X11).
@@ -57,15 +84,19 @@
 *   **Scroll-Zoom Crash**: Fixed a crash when switching files or redrawing during a scroll-zoom/pan animation.
 *   **Remote Downloads**: Stalled SSH/SFTP downloads are now detected instead of hanging.
 *   **Dialogs**: Fixed the Unit Conversion and Format Conversion dialogs crashing on open.
+*   **SunPy Cache**: Clearing the Sunpy Data Cache names what it deletes (`~/sunpy` and `~/.sunpy`, SunPy's own folders, which also hold data downloaded outside SolarViewer) and asks first.
+*   **Desktop Install**: The desktop install no longer replaces its own launcher, or another program's `sv`, in `~/.local/bin`: only links SolarViewer made are replaced or removed.
 
 ### Fixes
 *   **2D Gaussian Fit**: A fit that finds no component now shows an error instead of an all-zero result.
 *   **Solar Data Downloader CLI**: Fixed the launcher, which always failed.
 *   **Titles**: Removed a spurious "Error getting title" message for FITS files without time or frequency.
+*   **Beam**: The beam is drawn at the right angle after a Solar XY image is switched to RA/Dec; it kept its Solar XY angle.
 
 ### Under the Hood
 *   **Restructured Codebase**: The 17,000-line viewer was split into focused packages (`core`, `tools`, `dialogs`, `processing`, `coordinates`, `video`, `ui`, `pipeline`). Old import paths still work but emit a deprecation warning.
 *   **Packaging**: Moved from `setup.py` to `pyproject.toml`. The dependencies are now those the code uses: `requests`, `packaging`, `pandas`, `parfive`, `aiohttp` and `psutil` are declared, and the unused `reproject`, `dask`, `zarr`, `tifffile`, `qtpy` and `pyqt5-sip` are no longer required. OpenCV is no longer needed either: the Helioviewer browser now writes MP4 (H.264) with imageio, as Create Video does. The `setuptools<81` pin is gone (SolarViewer stopped using `pkg_resources` in 1.2.0).
+*   **Dependencies**: `cdflib` is new (the spacecraft receivers' CDF files), and `python-casacore` is required everywhere but macOS.
 *   **Cleanup**: Renamed `from_simpl` to `pipeline` and removed the unused `learmonth-py` scripts.
 
 ## Version 1.2.5
