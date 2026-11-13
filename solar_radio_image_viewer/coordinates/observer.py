@@ -120,8 +120,20 @@ def _observer_from_header(header, obstime):
     return _at_rest(observer.transform_to(GCRS(obstime=obstime)).cartesian, obstime)
 
 
+def _telescope_name(header, casa_name):
+    """The telescope's name as the image has it: its TELESCOP, or the name
+    CASA gives it (a CASA image has no header); None for an image with
+    neither."""
+    for name in (header.get("TELESCOP"), casa_name):
+        name = "" if name is None else str(name).strip()
+        if name and name.upper() not in ("UNKNOWN", "NONE", "N/A"):
+            return name
+    return None
+
+
 def _seen_from(fits_file, header, obstime):
-    """The observer of the image in GCRS, and its observatory if known."""
+    """The observer of the image in GCRS, and the name of its telescope
+    (None for an image that names none)."""
     # What convert_hpc_to_radec wrote is as its observer saw it, which is
     # the Earth's centre for a file from before it recorded that
     if any(RADEC_HISTORY in str(line) for line in header.get("HISTORY", [])):
@@ -134,10 +146,11 @@ def _seen_from(fits_file, header, obstime):
     ia_tool = IA()
     ia_tool.open(fits_file)
     metadata_dict = ia_tool.summary(list=False, verbose=True)
-    lat, long, height, observatory = extract_telescope_position(metadata_dict)
+    lat, long, height, named = extract_telescope_position(metadata_dict)
     ia_tool.close()
-    if str(observatory).upper() not in KNOWN_OBSERVATORIES:
-        observatory = None
+    # (the places kept here are of these observatories only; any other is
+    # still named in what is returned, so the Solar X/Y file keeps its name)
+    observatory = named if str(named).upper() in KNOWN_OBSERVATORIES else None
     POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
     if POS is None and None not in (lat, long, height):
         # The backup: the image names a telescope CASA knows the place of (the
@@ -147,7 +160,7 @@ def _seen_from(fits_file, header, obstime):
         logger.info("No telescope position in the header of %s: using CASA's (%s, %s, %.0f m)", fits_file, lat, long, height)
     if POS is None:
         raise RuntimeError("The image does not say where the telescope was")
-    return SkyCoord(POS.get_gcrs(obstime)), observatory
+    return SkyCoord(POS.get_gcrs(obstime)), observatory or _telescope_name(header, named)
 
 
 _sun_seen = {}  # (image, its time of change, obstime) -> sun_radec's answer
@@ -169,8 +182,8 @@ def _quietly(call, *args):
 def sun_radec(image, header, obstime):
     """The RA and Dec (degrees) of the Sun's centre at ``obstime`` (a Time)
     for the image at the path ``image`` with the FITS ``header`` (any mapping;
-    empty for a CASA image), and who saw it: the observatory's name, "the
-    telescope" for one with a position and no known name, or None.
+    empty for a CASA image), and who saw it: the telescope's name, "the
+    telescope" for one with a position and no name, or None.
 
     It is the Sun as ``convert_to_hpc`` has it: seen from the telescope the
     image names (``_seen_from``), the direction that conversion makes
