@@ -160,7 +160,11 @@ TOKENS = {
 #   PathSegment     a folder in it, a flat monospace button (current="true": the last)
 #   PathSeparator   the muted › between them
 #   PathEdit        the QLineEdit the path bar turns into, no frame of its own
+#   PathSuggestions the QFrame that drops down under it while a path is typed: the
+#                   folders that complete it in a list, or a note
 #   PlaceRow        a flat row button of a places column (current="true": the folder shown)
+#   PanelSplitter   a QSplitter between a window's columns, one of them dragged wider or
+#                   narrower: its handle shows only under the pointer
 #   FileList        a QTreeView of files, rows painted by their delegate, no frame
 #   SmallLink       a link in the smallest type, no border ("Clear cache")
 #   DetailName      a QLabel naming the selected file, monospace
@@ -235,7 +239,9 @@ ROLES = (
     "PathSegment",
     "PathSeparator",
     "PathEdit",
+    "PathSuggestions",
     "PlaceRow",
+    "PanelSplitter",
     "FileList",
     "SmallLink",
     "DetailName",
@@ -485,6 +491,12 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QSplitter::handle:vertical {{
         height: 1px;
+    }}
+    QSplitter#PanelSplitter::handle {{
+        background-color: transparent;
+    }}
+    QSplitter#PanelSplitter::handle:hover {{
+        background-color: {p['highlight_soft']};
     }}
 
     /* ===== Text ===== */
@@ -791,6 +803,26 @@ def get_stylesheet(palette, is_dark=True):
         min-height: 0px;
         font-family: {MONO_FAMILY};
         font-size: {FONT_SMALL}pt;
+    }}
+    QFrame#PathSuggestions {{
+        background-color: {p['surface_elevated']};
+        border: 1px solid {p['border_light']};
+        border-radius: {RADIUS_LG}px;
+    }}
+    QFrame#PathSuggestions QLabel {{
+        color: {p['warning']};
+        font-size: {FONT_SMALL}pt;
+    }}
+    QFrame#PathSuggestions QListWidget {{
+        background-color: transparent;
+        border: none;
+        outline: none;
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+    }}
+    QFrame#PathSuggestions QListWidget::item {{
+        padding: 4px 8px;
+        border-radius: {RADIUS - 2}px;
     }}
     QPushButton#PlaceRow {{
         background-color: transparent;

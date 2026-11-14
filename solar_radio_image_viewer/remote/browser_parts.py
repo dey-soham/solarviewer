@@ -14,9 +14,9 @@ import time
 from datetime import datetime
 
 from PyQt5.QtCore import (
-    QAbstractTableModel, QByteArray, QEvent, QModelIndex, QRect, QRectF, QSize, Qt, pyqtSignal,
+    QAbstractTableModel, QByteArray, QEvent, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, pyqtSignal,
 )
-from PyQt5.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -27,9 +27,14 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QSplitter,
+    QSplitterHandle,
     QStackedLayout,
     QStyle,
     QStyledItemDelegate,
@@ -247,12 +252,63 @@ def full_time(mtime):
     return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
 
 
-def short_folder(path):
-    """A folder's last two names ("solar/2026-10-24"), for a Recent row."""
-    parts = [part for part in re.split(r"[/\\]", path) if part]
-    if len(parts) <= 2:
-        return path
-    return "/".join(parts[-2:])
+def _names(path):
+    return [part for part in re.split(r"[/\\]", path) if part]
+
+
+def folder_name(path):
+    """A folder's own name ("FREQ_132.416MHz"); the path itself of one that
+    has none ("/", "~")."""
+    names = _names(path)
+    return names[-1] if names else path
+
+
+def folder_places(paths):
+    """Where each folder of ``paths`` is, for the small line under its name
+    in a row of the places column: ``(text, keep_end)`` for each.
+
+    Rows that are in the same folders up to some point say where they are
+    from that point on ("t1_hba0310/output/final_images" beside
+    "t4_lba0310/output/final_images"): the first name is the one that tells
+    them apart, so the text is to be cut at its end. A row with no other to
+    be told from, or whose folder holds another row's, gives the whole path
+    of the folder it is in, to be cut at its start (``keep_end``)."""
+    parents = [_names(path)[:-1] for path in paths]
+    places = []
+    for path, parent in zip(paths, parents):
+        if not _names(path):
+            places.append(("", False))
+            continue
+        others = [other for other in parents if other != parent]
+        shared = 0
+        for other in others:
+            same = 0
+            for mine, theirs in zip(parent, other):
+                if mine != theirs:
+                    break
+                same += 1
+            shared = max(shared, same)
+        if 0 < shared < len(parent):
+            places.append(("/".join(parent[shared:]), False))
+            continue
+        whole = ("/" if path.startswith(("/", "\\")) else "") + "/".join(parent)
+        places.append((whole, bool(whole) and (not others or shared == len(parent))))
+    return places
+
+
+def fit_path(text, metrics, room, keep_end=False):
+    """``text`` (a path) cut short to ``room`` pixels: at its end, or
+    (``keep_end``) by leaving out its first folders ("…/Data/Soham")."""
+    if metrics.horizontalAdvance(text) <= room:
+        return text
+    if not keep_end:
+        return metrics.elidedText(text, Qt.ElideRight, room)
+    names = text.split("/")
+    for first in range(1, len(names)):
+        shown = "…/" + "/".join(names[first:])
+        if metrics.horizontalAdvance(shown) <= room:
+            return shown
+    return metrics.elidedText(text, Qt.ElideLeft, room)
 
 
 # ------------------------------------------------------------- headers ----
@@ -465,21 +521,94 @@ class SmallLink(QPushButton):
 # -------------------------------------------------------------- path bar ----
 
 
+class PathSuggestions(QFrame):
+    """What drops down under a path bar while a path is typed (the
+    PathSuggestions role): the folders that complete it, or a note (a path
+    that could not be opened). It is a part of the window, not a window of
+    its own, and never takes the keyboard: a popup window does on Wayland,
+    and closing it ended the typing."""
+
+    chosen = pyqtSignal(int)  # the row clicked
+
+    ROWS = 8  # shown at once: more scroll
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("PathSuggestions")
+        self.setFocusPolicy(Qt.NoFocus)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(0)
+        self.note = QLabel()  # (in the warning colour: the role's rule)
+        self.note.setWordWrap(True)
+        self.note.setContentsMargins(6, 3, 6, 3)
+        layout.addWidget(self.note)
+        self.list = QListWidget()
+        self.list.setFocusPolicy(Qt.NoFocus)
+        self.list.setFrameShape(QFrame.NoFrame)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setTextElideMode(Qt.ElideMiddle)
+        self.list.setUniformItemSizes(True)
+        self.list.setMouseTracking(True)
+        self.list.setCursor(Qt.PointingHandCursor)
+        self.list.itemClicked.connect(lambda item: self.chosen.emit(self.list.row(item)))
+        layout.addWidget(self.list)
+        self.hide()
+
+    def show_names(self, names, width):
+        self.note.hide()
+        self.list.clear()
+        self.list.addItems(names)
+        self.list.setCurrentRow(-1)
+        self.list.show()
+        rows = min(len(names), self.ROWS)
+        self.list.setFixedHeight(rows * max(self.list.sizeHintForRow(0), 1) + 2)
+        self._open(width)
+
+    def show_note(self, text, width):
+        self.list.hide()
+        self.note.setText(text)
+        inside = max(width - 10, 60)  # (its lines break at this width: its height follows)
+        self.note.setFixedSize(inside, self.note.heightForWidth(inside))
+        self.note.show()
+        self._open(width)
+
+    def _open(self, width):
+        self.setFixedWidth(width)
+        self.adjustSize()
+        self.show()
+        self.raise_()
+
+
 class PathBar(QFrame):
     """The folder shown, as its folders to click (the PathBar role). Clicked
-    on its empty part (or ``start_editing``, Ctrl+L) it becomes a field to
-    type a path in: Enter goes there, Esc puts the folders back."""
+    on its empty part (there is always some, at its right) or with
+    ``start_editing`` (Ctrl+L) it becomes a field to type a path in. Enter
+    goes there, Tab completes the folder being typed, the arrows go through
+    the folders offered under it, Esc closes those and then puts the folders
+    back."""
 
-    pathChosen = pyqtSignal(str)  # a folder clicked, or a path typed
+    pathChosen = pyqtSignal(str)  # a folder clicked
+    pathEntered = pyqtSignal(str)  # a path typed (or a folder offered, clicked)
+    textTyped = pyqtSignal(str)  # the path as typed so far: what completes it is wanted
+    editingLeft = pyqtSignal()  # typing ended with the keyboard still in the field
+
+    TYPE_ROOM = 64  # the empty part kept at the right, to click on
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("PathBar")
         self.setFixedHeight(CONTROL_HEIGHT)
         self.setCursor(Qt.IBeamCursor)
-        self.setToolTip("Click to type a path")
+        self.setToolTip("Click to type a path (Ctrl+L)")
         self._path = "/"
         self._split = posixpath.split
+        self._sep = "/"
+        self._typed = ""  # the path as the user typed it (the arrows put a folder offered in the field)
+        self._head = ""  # the part of it before the folder being typed
+        self._names = []  # the folders offered: _head + one of them
+        self._tab_waits = False  # Tab was pressed with none offered: the one that comes is taken
+        self._drop = None  # where they show (made when first needed)
         self._stack = QStackedLayout(self)
         self._stack.setContentsMargins(1, 1, 1, 1)  # (inside its outline)
 
@@ -498,6 +627,7 @@ class PathBar(QFrame):
         self.edit = QLineEdit()
         self.edit.setObjectName("PathEdit")
         self.edit.installEventFilter(self)
+        self.edit.textEdited.connect(self._on_edited)
         self._stack.addWidget(self.edit)
 
     def _segment(self, text, target):
@@ -507,6 +637,7 @@ class PathBar(QFrame):
         button.setFocusPolicy(Qt.NoFocus)
         button.setAutoDefault(False)
         button.setProperty("target", target)
+        button.setProperty("name", text)
         button.clicked.connect(lambda: self.pathChosen.emit(button.property("target")))
         return button
 
@@ -522,11 +653,13 @@ class PathBar(QFrame):
     def path(self):
         return self._path
 
-    def set_path(self, path, split=posixpath.split):
+    def set_path(self, path, split=posixpath.split, sep="/"):
         """Show ``path``, a folder split into its parent and name by
-        ``split`` (posixpath.split on a server, os.path.split here)."""
+        ``split`` (posixpath.split on a server, os.path.split here), its
+        folders parted by ``sep``."""
         self._path = path
         self._split = split
+        self._sep = sep
         self.stop_editing()
         while self._row.count():
             item = self._row.takeAt(0)
@@ -564,15 +697,19 @@ class PathBar(QFrame):
         self._fit()
 
     def _fit(self):
-        """Leave out the folders after the first that do not fit, for "…"."""
+        """Leave out the folders after the first that do not fit, for "…",
+        and cut the last one's name short if it is still too long: the bar's
+        right end stays empty (``TYPE_ROOM``), to click on for typing."""
         if not self._items:
             return
-        room = self._crumbs.width() - 16
+        room = self._crumbs.width() - 16 - self.TYPE_ROOM
         spacing = self._row.spacing()
 
         def width(widget):
             return widget.sizeHint().width() + spacing
 
+        last = self._items[-1][1]
+        last.setText(last.property("name"))
         needed = sum(width(b) + (width(s) if s else 0) for s, b in self._items)
         hidden = 0
         if needed > room and len(self._items) > 2:
@@ -581,6 +718,11 @@ class PathBar(QFrame):
                 separator, button = self._items[1 + hidden]
                 needed -= width(button) + width(separator)
                 hidden += 1
+        if needed > room:
+            metrics = last.fontMetrics()
+            name = last.property("name")
+            fits = metrics.horizontalAdvance(name) - (needed - room)
+            last.setText(metrics.elidedText(name, Qt.ElideMiddle, max(fits, metrics.horizontalAdvance("…") * 8)))
         for n, (separator, button) in enumerate(self._items):
             shown = not (1 <= n <= hidden)
             button.setVisible(shown)
@@ -597,10 +739,19 @@ class PathBar(QFrame):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit()
+        self._place_drop()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._place_drop()
 
     def showEvent(self, event):
         super().showEvent(event)
         self._fit()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._hide_drop()
 
     def mousePressEvent(self, event):
         # (on the bar's empty part: a folder's button takes its own clicks)
@@ -609,18 +760,39 @@ class PathBar(QFrame):
         else:
             super().mousePressEvent(event)
 
-    def start_editing(self):
-        self.edit.setText(self._path)
+    # ------------------------------------------------------------ typing ----
+
+    def start_editing(self, text=None):
+        """Turn into the field, holding the folder shown (selected, so that
+        typing replaces it) or ``text`` (the cursor at its end)."""
+        self.edit.setText(self._path if text is None else text)
+        self._typed = self.edit.text()
+        self._head, self._names, self._tab_waits = "", [], False
+        self._hide_drop()
         self._stack.setCurrentWidget(self.edit)
         self._outline(True)
-        self.edit.setFocus(Qt.ShortcutFocusReason)
-        self.edit.selectAll()
+        if text is None:
+            self.edit.setFocus(Qt.ShortcutFocusReason)
+            self.edit.selectAll()
+        else:
+            self.edit.setFocus(Qt.OtherFocusReason)  # (a shortcut's would select it all)
+            self.edit.deselect()
+            self.edit.end(False)
 
     def stop_editing(self):
-        if self.editing:
-            self._stack.setCurrentWidget(self._crumbs)
-            self._outline(False)
-            self._fit()
+        if not self.editing:
+            return
+        held = self.edit.hasFocus()
+        self._hide_drop()
+        self._stack.setCurrentWidget(self._crumbs)
+        self._outline(False)
+        self._fit()
+        if held:
+            self.editingLeft.emit()
+
+    def typed(self):
+        """The path as typed so far."""
+        return self._typed
 
     def _outline(self, editing):
         # (the accent outline of a field being typed in)
@@ -628,20 +800,157 @@ class PathBar(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def _on_edited(self, text):
+        """The user changed the text: the folders offered follow at once if
+        they still apply (the same folder, a longer or shorter name), and
+        what completes the new text is asked for."""
+        self._typed = text
+        self._tab_waits = False
+        rest = text[len(self._head):] if text.startswith(self._head) else None
+        if rest is None or self._sep in rest or not self._names or not self.names_shown():
+            self._hide_drop()
+        else:
+            names = [name for name in self._names if name.lower().startswith(rest.lower())]
+            self._offer(names)
+        self.textTyped.emit(text)
+
+    # ----------------------------------------------- the folders offered ----
+
+    def set_suggestions(self, typed, head, names):
+        """The folders ``names`` complete the path ``typed`` (as textTyped
+        gave it): each is ``head`` + its name. They show under the field,
+        unless the text has changed since."""
+        if not self.editing or typed != self._typed:
+            return
+        names = list(names)
+        if self.names_shown() and head == self._head and names == self._names:
+            return  # (as shown: the arrows may be on one of them)
+        self._head = head
+        self._offer(names)
+        if self._tab_waits:
+            self._tab_waits = False
+            if self.names_shown():
+                self._complete()
+
+    def _offer(self, names):
+        if len(names) == 1 and self._head + names[0] == self._typed:
+            names = []  # (the folder typed in full: nothing to add)
+        self._names = names
+        if names:
+            self._ensure_drop().show_names(names, self.width())
+            self._place_drop()
+        else:
+            self._hide_drop()
+
+    def suggestions(self):
+        """The folders offered now (their names), [] if none show."""
+        return list(self._names) if self.names_shown() else []
+
+    def names_shown(self):
+        return self._drop is not None and self._drop.isVisible() and self._drop.list.isVisible()
+
+    def show_note(self, text):
+        """``text`` under the field (why a path typed could not be opened),
+        until the path is changed."""
+        if self.editing:
+            self._names = []
+            self._ensure_drop().show_note(text, self.width())
+            self._place_drop()
+
+    def note(self):
+        """The note showing under the field, "" if none."""
+        drop = self._drop
+        return drop.note.text() if drop is not None and drop.isVisible() and drop.note.isVisible() else ""
+
+    def _ensure_drop(self):
+        if self._drop is None:
+            self._drop = PathSuggestions(self.window())
+            self._drop.chosen.connect(self._take)
+        return self._drop
+
+    def _place_drop(self):
+        drop = self._drop
+        if drop is not None and drop.isVisible():
+            drop.move(self.mapTo(drop.parentWidget(), QPoint(0, self.height() + 2)))
+
+    def _hide_drop(self):
+        if self._drop is not None:
+            self._drop.hide()
+
+    def _take(self, row):
+        """A folder offered was clicked: go there."""
+        if 0 <= row < len(self._names):
+            self.edit.setText(self._head + self._names[row])
+            self._enter()
+
+    def _move(self, step):
+        """The arrows: through the folders offered, each put in the field;
+        past either end, back to the text as typed."""
+        rows = self._drop.list
+        row = rows.currentRow() + step
+        if row < -1:
+            row = len(self._names) - 1
+        elif row >= len(self._names):
+            row = -1
+        rows.setCurrentRow(row)
+        self.edit.setText(self._typed if row < 0 else self._head + self._names[row])
+
+    def _complete(self):
+        """Tab: the folder under the arrows, or the only one offered, is
+        typed out with its separator (its own folders are then offered);
+        of several, as far as their names agree."""
+        if not self.names_shown():
+            self._tab_waits = True
+            self.textTyped.emit(self._typed)
+            return
+        row = self._drop.list.currentRow()
+        if row >= 0 or len(self._names) == 1:
+            self._retype(self._head + self._names[max(row, 0)] + self._sep)
+            return
+        first = self._names[0]
+        agreed = len(os.path.commonprefix([name.lower() for name in self._names]))
+        if agreed > len(self._typed) - len(self._head):
+            self._retype(self._head + first[:agreed])
+
+    def _retype(self, text):
+        self.edit.setText(text)
+        self._on_edited(text)
+
+    def _enter(self):
+        text = self.edit.text().strip()
+        self._hide_drop()
+        if text:
+            self.pathEntered.emit(text)
+        else:
+            self.stop_editing()
+
     def eventFilter(self, watched, event):
         if watched is self.edit:
             if event.type() == QEvent.KeyPress:
-                if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                    text = self.edit.text().strip()
-                    if text:
-                        self.pathChosen.emit(text)
+                key = event.key()
+                if key in (Qt.Key_Return, Qt.Key_Enter):
+                    self._enter()
+                    return True  # (not the dialog's Open)
+                if key == Qt.Key_Escape:
+                    if self._drop is not None and self._drop.isVisible():
+                        self._hide_drop()
+                        self.edit.setText(self._typed)
                     else:
                         self.stop_editing()
-                    return True  # (not the dialog's Open)
-                if event.key() == Qt.Key_Escape:
-                    self.stop_editing()
                     return True  # (not closing the dialog)
-            elif event.type() == QEvent.FocusOut and event.reason() != Qt.PopupFocusReason:
+                if key in (Qt.Key_Down, Qt.Key_Up) and self.names_shown():
+                    self._move(1 if key == Qt.Key_Down else -1)
+                    return True
+                if key == Qt.Key_Tab:
+                    self._complete()
+                    return True  # (the keyboard stays in the field)
+            elif event.type() == QEvent.FocusOut and event.reason() not in (
+                Qt.PopupFocusReason, Qt.ActiveWindowFocusReason
+            ):
+                # The keyboard went to another part of the dialog. Not: the
+                # field's own menu opened, or the window was left for a while
+                # (to copy a path elsewhere), which Wayland also reports when
+                # a popup of this window closes
                 self.stop_editing()
         return super().eventFilter(watched, event)
 
@@ -652,9 +961,11 @@ class PathBar(QFrame):
 class PlaceRow(QPushButton):
     """A row of the places column (the PlaceRow role): an icon and a name,
     cut short in the middle if long; the folder it goes to in its tooltip.
-    ``current`` marks the folder shown (with an accent bar)."""
+    ``current`` marks the folder shown (with an accent bar). ``where`` is a
+    small second line under the name, saying where the folder is (cut short
+    at its end, or at its start if ``where_end``)."""
 
-    def __init__(self, icon_name, text, path, current=False, parent=None):
+    def __init__(self, icon_name, text, path, current=False, parent=None, where="", where_end=False):
         super().__init__(parent)
         self.setObjectName("PlaceRow")
         self.setCursor(Qt.PointingHandCursor)
@@ -666,12 +977,42 @@ class PlaceRow(QPushButton):
         self.icon_name = icon_name
         self.label = text
         self.path = path
+        self.where = where
+        self.where_end = where_end
+
+    def _small_font(self):
+        font = QFont(self.font())
+        font.setPointSizeF(FONT_META)
+        return font
+
+    def _lines(self):
+        """The heights of the name's line and of the line under it (0 if none)."""
+        name = max(self.fontMetrics().height(), 14)
+        return name, QFontMetrics(self._small_font()).height() if self.where else 0
+
+    def shown_lines(self):
+        """The name and the line under it as drawn: cut short to the row's width."""
+        room = self.width() - 34
+        name = self.fontMetrics().elidedText(self.label, Qt.ElideMiddle, room)
+        if not self.where:
+            return name, ""
+        return name, fit_path(self.where, QFontMetrics(self._small_font()), room, self.where_end)
 
     def sizeHint(self):
-        return QSize(120, max(self.fontMetrics().height(), 14) + 14)
+        self.ensurePolished()
+        name, under = self._lines()
+        return QSize(120, name + under + (8 if under else 14))
 
     def minimumSizeHint(self):
         return QSize(40, self.sizeHint().height())
+
+    def event(self, event):
+        done = super().event(event)
+        if event.type() in (QEvent.Polish, QEvent.StyleChange, QEvent.FontChange):
+            # The style sheet's "min-height: 0" makes the row's least height
+            # its padding alone: a short column would squash its rows to that
+            self.setMinimumHeight(self.sizeHint().height())
+        return done
 
     def paintEvent(self, event):
         painter = QStylePainter(self)
@@ -684,25 +1025,40 @@ class PlaceRow(QPushButton):
         colour = palette["text"] if self.property("current") == "true" else palette["text_strong"]
         if not self.isEnabled():
             colour = palette["disabled"]
-        left, size, height = 6, 14, self.height()
+        left, size = 6, 14
+        name_height, under_height = self._lines()
+        top = (self.height() - name_height - under_height) // 2
         painter.drawPixmap(
-            left, (height - size) // 2, pixmap(self.icon_name, colour, size, self.devicePixelRatioF())
+            left, top + (name_height - size) // 2, pixmap(self.icon_name, colour, size, self.devicePixelRatioF())
         )
         text_left = left + size + 8
         room = self.width() - text_left - 6
+        name, under = self.shown_lines()
         painter.setPen(QColor(colour))
-        painter.drawText(
-            QRect(text_left, 0, room, height), Qt.AlignLeft | Qt.AlignVCenter,
-            self.fontMetrics().elidedText(self.label, Qt.ElideMiddle, room),
-        )
+        painter.drawText(QRect(text_left, top, room, name_height), Qt.AlignLeft | Qt.AlignVCenter, name)
+        if under:
+            painter.setFont(self._small_font())
+            painter.setPen(QColor(palette["text_secondary"] if self.isEnabled() else colour))
+            painter.drawText(
+                QRect(text_left, top + name_height, room, under_height), Qt.AlignLeft | Qt.AlignVCenter, under
+            )
 
 
 class PlacesPanel(QFrame):
     """The places column (the Sidebar role): the connection, Home and the
-    pinned folders, the recent ones, and the cache at the foot."""
+    pinned folders, the recent ones, and the cache at the foot. A folder's
+    row gives its name and, under it, where it is; the folders scroll when
+    they are more than the column has room for. The column's width is the
+    browser's to set (dragged there), within ``LIMITS``."""
+
+    GAP = 10  # the column's side margin (a scroll bar of the folders takes the right one)
+    WIDTH = 184  # at first
+    LIMITS = (150, 480)
 
     placeChosen = pyqtSignal(str)
     unpinRequested = pyqtSignal(str)
+    forgetRequested = pyqtSignal(str)  # a recent folder to take out of the list
+    clearRecentRequested = pyqtSignal()
     reconnectRequested = pyqtSignal()
     switchRequested = pyqtSignal()
     clearCacheRequested = pyqtSignal()
@@ -710,15 +1066,16 @@ class PlacesPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Sidebar")
-        self.setFixedWidth(184)
+        self.setMinimumWidth(self.LIMITS[0])
+        self.setMaximumWidth(self.LIMITS[1])
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 14, 10, 14)
+        layout.setContentsMargins(self.GAP, 14, 0, 14)
         layout.setSpacing(18)
 
         # The connection
         connection = QWidget()
         column = QVBoxLayout(connection)
-        column.setContentsMargins(4, 0, 4, 0)
+        column.setContentsMargins(4, 0, 4 + self.GAP, 0)
         column.setSpacing(8)
         column.addWidget(kicker("Connection"))
         line = QHBoxLayout()
@@ -748,16 +1105,28 @@ class PlacesPanel(QFrame):
         layout.addWidget(connection)
 
         # Home and the pinned folders; the recent ones
+        folders = QWidget()
+        self._folders = QVBoxLayout(folders)
+        self._folders.setContentsMargins(0, 0, self.GAP, 0)
+        self._folders.setSpacing(18)
         self._places = self._group("Places")
-        layout.addWidget(self._places)
+        self._folders.addWidget(self._places)
         self._recent = self._group("Recent")
-        layout.addWidget(self._recent)
-        layout.addStretch()
+        self._folders.addWidget(self._recent)
+        self._folders.addStretch()
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setFocusPolicy(Qt.NoFocus)
+        self.scroll.setWidget(folders)
+        self.scroll.verticalScrollBar().rangeChanged.connect(self._make_room_for_bar)
+        layout.addWidget(self.scroll, 1)
 
         # The cache
         cache = QWidget()
         column = QVBoxLayout(cache)
-        column.setContentsMargins(4, 0, 4, 0)
+        column.setContentsMargins(4, 0, 4 + self.GAP, 0)
         column.setSpacing(4)
         self.cache_label = ActivityLabel(diameter=10)
         self.cache_label.label.setObjectName("Meta")
@@ -766,6 +1135,9 @@ class PlacesPanel(QFrame):
         self.clear_link = SmallLink("Clear cache", self.clearCacheRequested.emit)
         column.addWidget(self.clear_link)
         layout.addWidget(cache)
+
+    def sizeHint(self):
+        return QSize(self.WIDTH, super().sizeHint().height())
 
     def _group(self, title):
         group = QWidget()
@@ -793,32 +1165,58 @@ class PlacesPanel(QFrame):
             hint.setContentsMargins(4, 0, 4, 0)
             column.addWidget(hint)
 
-    def _row(self, icon_name, text, path, current=False):
-        row = PlaceRow(icon_name, text, path, current)
+    def _make_room_for_bar(self, low, high):
+        """The folders' scroll bar, when there is one, stands in the column's
+        right margin: the rows keep their width."""
+        bar = self.scroll.verticalScrollBar().sizeHint().width() if high > low else 0
+        self._folders.setContentsMargins(0, 0, max(0, self.GAP - bar), 0)
+
+    def _row(self, icon_name, text, path, current=False, where="", where_end=False):
+        row = PlaceRow(icon_name, text, path, current, where=where, where_end=where_end)
         row.clicked.connect(lambda: self.placeChosen.emit(path))
         return row
+
+    def _folder_rows(self, icon_name, paths, current):
+        """A row for each folder of ``paths``: its name, and where it is."""
+        return [
+            self._row(icon_name, folder_name(path), path, path == current, where, where_end)
+            for path, (where, where_end) in zip(paths, folder_places(paths))
+        ]
 
     def set_places(self, home, pinned, current=None):
         """Home (``home``, or no row if None) and the ``pinned`` folders."""
         rows = [self._row("home", "Home", home, home == current)] if home else []
-        for path in pinned:
-            row = self._row("place", path, path, path == current)
-            row.setContextMenuPolicy(Qt.CustomContextMenu)
-            row.customContextMenuRequested.connect(lambda _pos, p=path, r=row: self._unpin_menu(p, r))
+        for path, row in zip(pinned, self._folder_rows("place", pinned, current)):
+            self._give_menu(row, lambda p=path, r=row: self.pinned_menu(p, r))
             rows.append(row)
         self._fill(self._places, rows)
 
-    def _unpin_menu(self, path, row):
-        from PyQt5.QtGui import QCursor
-        from PyQt5.QtWidgets import QMenu
+    def _give_menu(self, row, make):
+        """``row`` clicked with the right button opens the menu ``make()`` gives."""
+        row.setContextMenuPolicy(Qt.CustomContextMenu)
+        row.customContextMenuRequested.connect(lambda _pos: make().exec_(QCursor.pos()))
 
+    def pinned_menu(self, path, row):
+        """The menu of a pinned folder's row."""
         menu = QMenu(row)
         menu.addAction("Unpin from Places", lambda: self.unpinRequested.emit(path))
-        menu.exec_(QCursor.pos())
+        return menu
+
+    def recent_menu(self, path, row):
+        """The menu of a recent folder's row: to take it, or all of them, out
+        of the list (the folders themselves are not touched)."""
+        menu = QMenu(row)
+        menu.addAction("Remove from Recent", lambda: self.forgetRequested.emit(path))
+        menu.addSeparator()
+        menu.addAction("Clear Recent", self.clearRecentRequested.emit)
+        return menu
 
     def set_recent(self, paths, current=None):
         """The folders images were last opened from, ``current`` marked."""
-        rows = [self._row("recent", short_folder(p), p, p == current) for p in paths]
+        paths = list(paths)
+        rows = self._folder_rows("recent", paths, current)
+        for path, row in zip(paths, rows):
+            self._give_menu(row, lambda p=path, r=row: self.recent_menu(p, r))
         self._fill(self._recent, rows, "Folders you open images from show here.")
 
     def show_connected(self, host, detail, can_switch):
@@ -866,6 +1264,33 @@ class PlacesPanel(QFrame):
         else:
             self.cache_label.stop("Cache · empty")
         self.clear_link.setEnabled(bool(count))
+
+
+class ColumnHandle(QSplitterHandle):
+    """The handle of a ColumnSplitter: dragged, it moves; double-clicked, it
+    asks for the column's usual width."""
+
+    def mouseDoubleClickEvent(self, event):
+        self.splitter().resetRequested.emit()
+
+
+class ColumnSplitter(QSplitter):
+    """A window's columns side by side (the PanelSplitter role), with a
+    handle between them to drag one wider or narrower. A double-click on the
+    handle asks for the usual width (``resetRequested``)."""
+
+    resetRequested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self.setObjectName("PanelSplitter")
+        self.setHandleWidth(5)
+        self.setChildrenCollapsible(False)
+
+    def createHandle(self):
+        handle = ColumnHandle(self.orientation(), self)
+        handle.setToolTip("Drag to make the column wider or narrower. Double-click for its usual width.")
+        return handle
 
 
 # ------------------------------------------------------------- file list ----

@@ -19,13 +19,12 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt5.QtCore import QSettings, QSize, QStringListModel, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QSettings, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
-    QCompleter,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -51,6 +50,7 @@ from .browser_parts import (
     KIND_ROLE,
     MODIFIED,
     SPECTRUM,
+    ColumnSplitter,
     DetailsPanel,
     FileListModel,
     FileListView,
@@ -375,7 +375,7 @@ except Exception as exc:
                 if isinstance(e, socket.timeout):
                     self.error.emit(f"the server did not answer for {SERVER_TIMEOUT} s")
                 else:
-                    self.error.emit(str(e) or type(e).__name__)
+                    self.error.emit(getattr(e, "strerror", None) or str(e) or type(e).__name__)
         finally:
             if self._sftp:
                 try:
@@ -689,6 +689,7 @@ class RemoteFileBrowser(QDialog):
     _last_local = ""  # the local folder last shown
 
     RECENT = 6  # recent folders kept, per server and for this computer
+    LIST_ROOM = 360  # the least the file list is left when the places column is dragged wider
 
     @classmethod
     def _remove_active_thread(cls, thread):
@@ -733,7 +734,8 @@ class RemoteFileBrowser(QDialog):
         self._reconnect_thread = None
         self._reconnect_since = 0.0
         self._home_thread = None
-        self._home_wanted = None  # (remember,) until the home folder is found
+        self._home_wanted = None  # (remember, what to add to it) until the home folder is found
+        self._typed_entry = None  # (the path typed, the folder shown before): while that path is listed
         self._autocomplete_thread: Optional[QThread] = None
         self._clear_thread = None
         self._cache_size = (0, 0)  # (bytes, files), as last measured
@@ -777,17 +779,24 @@ class RemoteFileBrowser(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._build_toolbar())
-        body = QHBoxLayout()
+        # The places column, its width dragged at the handle on its right
+        # (remembered), and beside it the files and the selected one's details
+        self.columns = ColumnSplitter()
+        rest = QWidget()
+        body = QHBoxLayout(rest)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         self.places = PlacesPanel()
         self.places.placeChosen.connect(self._on_place)
         self.places.unpinRequested.connect(self._toggle_pin)
+        self.places.forgetRequested.connect(self._forget_recent)
+        self.places.clearRecentRequested.connect(self._forget_recent)
         self.places.reconnectRequested.connect(self._reconnect)
         self.places.switchRequested.connect(self._switch_server)
         self.places.clearCacheRequested.connect(self._clear_cache)
-        body.addWidget(self.places)
+        self.columns.addWidget(self.places)
         body.addWidget(self._build_list(), 1)
+        self.list_column.setMinimumWidth(self.LIST_ROOM)
         self.details = DetailsPanel()
         self.details.readRequested.connect(self._read_header)
         self.details.fullHeaderRequested.connect(self._show_full_header)
@@ -796,7 +805,13 @@ class RemoteFileBrowser(QDialog):
         )
         self.details.auto_switch.toggled.connect(self._on_auto_toggled)
         body.addWidget(self.details)
-        layout.addLayout(body, 1)
+        self.columns.addWidget(rest)
+        self.columns.setStretchFactor(0, 0)
+        self.columns.setStretchFactor(1, 1)
+        self._set_places_width(self._stored_places_width())
+        self.columns.splitterMoved.connect(lambda *_: self._keep_places_width())
+        self.columns.resetRequested.connect(self._reset_places_width)
+        layout.addWidget(self.columns, 1)
         layout.addWidget(self._build_footer())
 
     def _tool(self, name, tip, slot):
@@ -849,14 +864,9 @@ class RemoteFileBrowser(QDialog):
 
         self.path_bar = PathBar()
         self.path_bar.pathChosen.connect(self._on_path_chosen)
-        self.path_bar.edit.textEdited.connect(lambda _text: self._autocomplete_timer.start(250))
-        self._completions = QStringListModel(self)
-        self._completer = QCompleter(self._completions, self)
-        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self._completer.setCompletionMode(QCompleter.PopupCompletion)
-        self._completer.setMaxVisibleItems(10)
-        self._completer.activated[str].connect(self._on_path_chosen)
-        self.path_bar.edit.setCompleter(self._completer)
+        self.path_bar.pathEntered.connect(self._on_path_entered)
+        self.path_bar.textTyped.connect(lambda _text: self._autocomplete_timer.start(150))
+        self.path_bar.editingLeft.connect(lambda: self.view.setFocus(Qt.OtherFocusReason))
         row.addWidget(self.path_bar, 1)
 
         self.filter_edit = QLineEdit()
@@ -1054,13 +1064,16 @@ class RemoteFileBrowser(QDialog):
         else:
             self._navigate("/", remember=False)
 
-    def _navigate(self, path, remember=True, select=None, fallback=False):
+    def _navigate(self, path, remember=True, select=None, fallback=False, typed=None):
         """Show the folder ``path`` (of the server or of this computer, as
         shown), with ``select`` selected once it is listed; ``fallback``:
-        the home folder instead if it cannot be listed."""
+        the home folder instead if it cannot be listed. ``typed``: the path
+        was typed as that text, and if it cannot be listed the folder shown
+        now comes back, with the text to put right."""
         self._home_wanted = None
         path = self._normalise(path)
         self._fallback_home = fallback
+        self._typed_entry = (typed, self._folder()) if typed and self._folder() else None
         previous = self._folder()
         if remember and previous and previous != path:
             stack = self._back[self.source]
@@ -1072,7 +1085,7 @@ class RemoteFileBrowser(QDialog):
         else:
             RemoteFileBrowser._last_local = path
         self._select_after = select
-        self.path_bar.set_path(path, self._paths().split)
+        self.path_bar.set_path(path, self._paths().split, self._paths().sep)
         self.filter_edit.blockSignals(True)
         self.filter_edit.clear()
         self.filter_edit.blockSignals(False)
@@ -1083,9 +1096,25 @@ class RemoteFileBrowser(QDialog):
         self._update_places()
         self._refresh()
 
-    def _on_path_chosen(self, text):
-        """A folder clicked in the path bar, or a path typed there: a FITS
-        file's opens its folder with it selected."""
+    def _on_path_entered(self, text):
+        """A path typed in the path bar (relative to the folder shown, or
+        from ~, or whole), or a folder offered there and clicked."""
+        text = text.strip()
+        if len(text) > 1 and text[0] == text[-1] and text[0] in "\"'":
+            text = text[1:-1].strip()  # (pasted with its quotes)
+        if not text:
+            self.path_bar.stop_editing()
+            return
+        if self.source == "remote" and text.startswith("~") and not self.connection.last_home:
+            # (its home folder is not known yet: found first)
+            if self.connection.is_connected():
+                self._fetch_home(suffix=text[1:])
+            return
+        self._on_path_chosen(text, typed=text)
+
+    def _on_path_chosen(self, text, typed=None):
+        """A folder clicked in the path bar, or a path typed there (as
+        ``typed``): a FITS file's opens its folder with it selected."""
         paths = self._paths()
         text = text.strip()
         if self.source == "remote" and text.startswith("~") and self.connection.last_home:
@@ -1095,7 +1124,7 @@ class RemoteFileBrowser(QDialog):
         path = self._normalise(text)
         folder, name = paths.split(path)
         if name and fits_named(name):
-            self._navigate(folder, select=path)
+            self._navigate(folder, select=path, typed=typed)
             return
         # Up to a folder above: the one come from, in it, selected
         current, separator = self._folder(), paths.sep
@@ -1103,7 +1132,20 @@ class RemoteFileBrowser(QDialog):
         prefix = path.rstrip(separator) + separator
         if current != path and current.startswith(prefix):
             child = prefix + current[len(prefix):].split(separator)[0]
-        self._navigate(path, select=child)
+        self._navigate(path, select=child, typed=typed)
+
+    def _back_from_typed(self, typed, message):
+        """The path typed (``typed``: its text, the folder shown before)
+        could not be listed: that folder again, and the text back in the
+        path bar with why, to put right."""
+        text, previous = typed
+        failed = self._folder()
+        stack = self._back[self.source]
+        if stack and stack[-1] == previous:
+            stack.pop()
+        self._navigate(previous, remember=False)
+        self.path_bar.start_editing(text)
+        self.path_bar.show_note(f"Couldn’t open {failed}: {message}")
 
     def _update_nav(self):
         folder = self._folder()
@@ -1129,11 +1171,11 @@ class RemoteFileBrowser(QDialog):
         elif self.connection.is_connected():
             self._fetch_home()
 
-    def _fetch_home(self, remember=True):
-        """Find the server's home folder and go there (``remember``: with
-        the folder shown kept for Back)."""
+    def _fetch_home(self, remember=True, suffix=""):
+        """Find the server's home folder and go there, or to ``suffix``
+        ("/data") in it (``remember``: with the folder shown kept for Back)."""
         self._cancel_listing()
-        self._home_wanted = (remember,)
+        self._home_wanted = (remember, suffix)
         self._show_waiting("Finding your home folder…")
         if self._home_thread is not None:
             return
@@ -1148,7 +1190,7 @@ class RemoteFileBrowser(QDialog):
         self._home_thread = None
         wanted = self._home_wanted  # (None if another folder was asked for meanwhile)
         if wanted is not None and self.source == "remote":
-            self._navigate(home, remember=wanted[0])
+            self._navigate(home + wanted[1], remember=wanted[0])
 
     def _set_source(self, source, load_initial=False):
         """Browse the server's files ("remote") or this computer's ("local");
@@ -1277,6 +1319,7 @@ class RemoteFileBrowser(QDialog):
             return
         self._list_thread = None
         self._end_waiting()
+        self._typed_entry = None
         self._list_failed = False
         self._list_partial = partial
         self._fallback_home = False
@@ -1312,6 +1355,10 @@ class RemoteFileBrowser(QDialog):
             return
         self._list_thread = None
         self._end_waiting()
+        typed, self._typed_entry = self._typed_entry, None
+        if typed is not None and not disconnected and (self.source == "local" or self.connection.is_connected()):
+            self._back_from_typed(typed, message)
+            return
         if self._fallback_home and not disconnected and self.connection.is_connected():
             # (the folder remembered is gone, or not this server's)
             self._fallback_home = False
@@ -1556,6 +1603,27 @@ class RemoteFileBrowser(QDialog):
 
     # -------------------------------------------------- places and recent ----
 
+    def _stored_places_width(self):
+        """The places column's width as last dragged (its usual one if never)."""
+        try:
+            width = int(QSettings("SolarViewer", "SolarViewer").value("remote_browser/places_width", 0))
+        except (TypeError, ValueError):
+            width = 0
+        return width if width > 0 else PlacesPanel.WIDTH
+
+    def _set_places_width(self, width):
+        low, high = PlacesPanel.LIMITS
+        width = min(max(int(width), low), high)
+        total = max(self.columns.width(), self.width())
+        self.columns.setSizes([width, max(1, total - width - self.columns.handleWidth())])
+
+    def _keep_places_width(self):
+        QSettings("SolarViewer", "SolarViewer").setValue("remote_browser/places_width", self.columns.sizes()[0])
+
+    def _reset_places_width(self):
+        self._set_places_width(PlacesPanel.WIDTH)
+        self._keep_places_width()
+
     def _stored(self, kind):
         value = QSettings("SolarViewer", "SolarViewer").value(f"remote_browser/{kind}/{self._source_key()}", [])
         if isinstance(value, str):  # (a list of one comes back as a string)
@@ -1583,6 +1651,12 @@ class RemoteFileBrowser(QDialog):
     def _toggle_pin(self, path):
         pinned = self._stored("places")
         self._store("places", [p for p in pinned if p != path] if path in pinned else pinned + [path])
+        self._update_places()
+
+    def _forget_recent(self, folder=None):
+        """Take ``folder`` out of the recent folders (all of them if None).
+        Only the list changes: nothing is done to the folder."""
+        self._store("recent", [p for p in self._stored("recent") if p != folder] if folder else [])
         self._update_places()
 
     def _remember_recent(self, folder):
@@ -1954,28 +2028,47 @@ class RemoteFileBrowser(QDialog):
 
     # ---------------------------------------------------------- the path ----
 
+    def _typed_parts(self, text):
+        """Of the path typed so far: the text before the folder being typed,
+        the folder that one is in, and what is typed of its name. The path
+        may be whole, from ~, or relative to the folder shown. None if that
+        folder cannot be told (a server's ~ before its home folder is known)."""
+        paths = self._paths()
+        separators = "/" if self.source == "remote" else os.sep + (os.altsep or "")
+        cut = max(text.rfind(separator) for separator in separators) + 1
+        head, partial = text[:cut], text[cut:]
+        folder = head
+        if self.source == "local":
+            folder = os.path.expanduser(folder)
+        elif folder.startswith("~"):
+            if not self.connection.last_home:
+                return None
+            folder = self.connection.last_home + folder[1:]
+        if not paths.isabs(folder):
+            folder = paths.join(self._folder(), folder)
+        return head, self._normalise(folder), partial
+
     def _complete(self):
         """Offer the folders that complete the path typed."""
-        edit = self.path_bar.edit
-        text = edit.text().strip()
-        if not text or not self.path_bar.editing:
+        bar = self.path_bar
+        if not bar.editing:
             return
+        text = bar.typed()
+        parts = self._typed_parts(text)
+        if parts is None:
+            bar.set_suggestions(text, "", [])
+            return
+        head, folder, partial = parts
+
+        def show(found):
+            self._show_completions(text, head, found)
+
         if self.source == "local":
-            text = os.path.expanduser(text)
-            if text.endswith(os.sep):
-                parent, partial = text, ""
-            else:
-                parent, partial = os.path.split(text)
-            self._run_completion(CallThread(_local_completions, parent or os.sep, partial))
+            self._run_completion(CallThread(_local_completions, folder, partial), show)
             return
-        if text.endswith("/"):
-            parent, partial = text.rstrip("/") or "/", ""
-        else:
-            parent, partial = posixpath.split(text)
-            parent = parent or "/"
-        cached = RemoteFileBrowser._listing_cache.get((self._server_key(), posixpath.normpath(parent)))
+        cached = RemoteFileBrowser._listing_cache.get((self._server_key(), folder))
         if cached is not None and time.time() - cached[1] < self._cache_ttl:
-            self._show_completions([
+            show([
                 e.path for e in cached[0]
                 if e.is_dir and e.name.lower().startswith(partial.lower())
                 and (partial.startswith(".") or not e.name.startswith("."))
@@ -1983,25 +2076,32 @@ class RemoteFileBrowser(QDialog):
             return
         if not self.connection.is_connected():
             return
-        self._run_completion(AutocompleteThread(self.connection, parent, partial))
+        self._run_completion(AutocompleteThread(self.connection, folder, partial), show)
 
-    def _run_completion(self, thread):
-        """Start ``thread``, instead of the one that may still be at it."""
+    def _run_completion(self, thread, show):
+        """Start ``thread``, instead of the one that may still be at it;
+        ``show`` gets the folders it finds (none if it fails)."""
         previous = self._autocomplete_thread
         if previous is not None and previous.isRunning():
             _silence(previous)
             if hasattr(previous, "cancel"):
                 previous.cancel()
-        (thread.done if isinstance(thread, CallThread) else thread.finished).connect(self._show_completions)
+        if isinstance(thread, CallThread):
+            thread.done.connect(show)
+            thread.failed.connect(lambda _message: show([]))
+        else:
+            thread.finished.connect(show)
         self._autocomplete_thread = thread
         self._start(thread)
 
-    def _show_completions(self, paths):
-        if _deleted(self) or not self.path_bar.editing:
+    def _show_completions(self, text, head, found):
+        """The folders ``found`` complete the path typed as ``text``: their
+        names are offered under the path bar, each to follow ``head``."""
+        if _deleted(self):
             return
-        self._completions.setStringList(paths)
-        if paths and self.path_bar.edit.hasFocus():
-            self._completer.complete()
+        paths = self._paths()
+        names = [paths.basename(path.rstrip("/" + os.sep)) for path in found]
+        self.path_bar.set_suggestions(text, head, [name for name in names if name])
 
     # ----------------------------------------------------------- closing ----
 
