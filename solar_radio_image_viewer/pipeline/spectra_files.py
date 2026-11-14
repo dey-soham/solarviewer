@@ -16,10 +16,8 @@ import numpy as np
 from astropy.io import fits
 from PyQt5.QtWidgets import (
     QApplication,
-    QHBoxLayout,
     QFileDialog,
     QMessageBox,
-    QLabel,
     QDialog,
     QLineEdit,
     QTableWidget,
@@ -31,7 +29,7 @@ from PyQt5.QtWidgets import (
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import QSettings, Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
-from ..ui.styles import FONT_SMALL, MONO_FAMILY, SPACE_M, themed
+from ..ui.styles import FONT_SMALL, MONO_FAMILY, themed
 
 from .spectra_common import _RemoteRead, _local_block_stats, _size_text, read_view
 logger = logging.getLogger(__name__)
@@ -41,7 +39,7 @@ from ..ui.activity import begin_activity, track_thread
 from ..ui.background import Cancelled, run_in_thread, wait_for
 from ..ui.busy import busy
 from ..ui.recent_files import forget_spectrum, remember_spectrum
-from ..ui.widgets import button_bar, dialog_layout
+from ..ui.widgets import ElidedLabel, button_bar, dialog_layout
 from ..ui.geometry import fit_to_screen
 
 
@@ -163,6 +161,47 @@ def axes_from_header(header, naxis1, naxis2):
                     ref_s = (day_s if date_only else start_s) + crval_s
             time_axis = ref_s + offsets * cdelt * per_second
     return time_axis, freq_axis
+
+
+class _HeaderTable(QTableWidget):
+    """A FITS header as Keyword | Value | Comment that fills its width at
+    any size: the keyword as wide as the longest, the value as wide as its
+    values up to a share of the room, the comment taking the rest. A value
+    or comment too long for its column wraps onto more lines (a long
+    HISTORY line reads whole). No sideways scrolling."""
+
+    VALUE_SHARE = 0.5  # of the room after the keyword, at most, for the value
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTextElideMode(Qt.ElideNone)
+        self.setWordWrap(True)  # (at spaces, or anywhere in a long path)
+        # Each row as tall as its wrapped text needs, again at every width
+        self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        header = self.horizontalHeader()
+        header.setMinimumSectionSize(48)
+        header.setStretchLastSection(True)
+        self._value_wants = 0
+
+    def fit_columns(self):
+        """Measure what the keyword and value columns want (after filling)."""
+        self.resizeColumnToContents(0)
+        self.resizeColumnToContents(1)
+        self._value_wants = self.columnWidth(1)
+        self._share()
+
+    def _share(self):
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        room = self.viewport().width() - self.columnWidth(0)
+        if room > 0 and self._value_wants:
+            self.setColumnWidth(1, max(80, min(self._value_wants, int(room * self.VALUE_SHARE))))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._share()
 
 
 class SpectraFilesMixin:
@@ -1110,16 +1149,13 @@ class SpectraFilesMixin:
 
         main_layout = dialog_layout(dlg)
 
-        # The file, and a filter across the tables
-        search_layout = QHBoxLayout()
-        search_layout.setSpacing(SPACE_M)
-        source_label = QLabel(os.path.basename(self.current_filename))
-        source_label.setObjectName("Badge")
-        search_layout.addWidget(source_label)
+        # The file's name as a plain line (as in the main window's metadata),
+        # then a filter across the tables
+        main_layout.addWidget(ElidedLabel(os.path.basename(self.current_filename), "DetailName"))
         search_input = QLineEdit()
-        search_input.setPlaceholderText("Filter headers across all columns…")
-        search_layout.addWidget(search_input, 1)
-        main_layout.addLayout(search_layout)
+        search_input.setPlaceholderText("Filter keywords, values and comments…")
+        search_input.setClearButtonEnabled(True)
+        main_layout.addWidget(search_input)
 
         tab_widget = QTabWidget()
         main_layout.addWidget(tab_widget, 1)
@@ -1132,7 +1168,7 @@ class SpectraFilesMixin:
         comments = []
 
         for hdu_name, hdu_header in self._all_headers:
-            table = QTableWidget()
+            table = _HeaderTable()
             table.setColumnCount(3)
             table.setHorizontalHeaderLabels(["Keyword", "Value", "Comment"])
             table.verticalHeader().setVisible(False)
@@ -1142,9 +1178,6 @@ class SpectraFilesMixin:
             table.setShowGrid(False)
 
             h_header = table.horizontalHeader()
-            h_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            h_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            h_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
             h_header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
             cards = hdu_header.cards
@@ -1153,10 +1186,12 @@ class SpectraFilesMixin:
                 k = QTableWidgetItem(str(card.keyword))
                 k.setFont(bold_mono)
 
-                v = QTableWidgetItem(str(card.value) if card.value is not None else "")
+                value = str(card.value) if card.value is not None else ""
+                v = QTableWidgetItem(value)
                 v.setFont(mono_font)
 
-                c = QTableWidgetItem(str(card.comment) if card.comment else "")
+                comment = str(card.comment) if card.comment else ""
+                c = QTableWidgetItem(comment)
                 c.setFont(mono_font)
                 comments.append(c)
 
@@ -1164,6 +1199,7 @@ class SpectraFilesMixin:
                 table.setItem(i, 1, v)
                 table.setItem(i, 2, c)
 
+            table.fit_columns()
             tab_widget.addTab(table, hdu_name)
 
         def tint_comments(palette):
