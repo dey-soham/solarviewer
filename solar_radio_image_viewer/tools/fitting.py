@@ -12,9 +12,12 @@ import threading
 import time
 
 import numpy as np
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QLayout, QMessageBox
+from ..dialogs.form import field_label, form_block
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.errors import show_error
+from ..ui.widgets import button_bar, dialog_layout
 
 from ..processing.fits_io import readable_image_path
 from ..ui.busy import begin_busy, end_busy
@@ -43,6 +46,105 @@ def imfit_box(roi, shape=None):
     if yhigh <= ylow:
         raise ValueError("yhigh <= ylow")
     return f"{xlow},{ylow},{xhigh},{yhigh}"
+
+
+def ask_fit_offset(parent, note=""):
+    """Whether to fit a zero-level offset (a constant background) with the
+    Gaussian. ``note`` comes first. Closing the box assumes zero background,
+    as No did."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Question)
+    box.setWindowTitle("Fitting options")
+    box.setText("Fit a constant background level (zero-level offset) with the Gaussian?")
+    if note:
+        box.setInformativeText(note.strip())
+    # Buttons of plain words, with no mnemonic underlines (the standard
+    # Yes and No have them)
+    zero = box.addButton("Zero background", QMessageBox.RejectRole)
+    fit = box.addButton("Fit offset", QMessageBox.AcceptRole)
+    fit.setObjectName("PrimaryButton")
+    box.setDefaultButton(fit)
+    box.setEscapeButton(zero)
+    box.exec_()
+    return box.clickedButton() is fit
+
+
+_SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def readable_number(value, digits=4):
+    """``value`` to ``digits`` significant digits in plain decimals with
+    thousands separated ("312,200", "0.01234"), or very large or small as
+    "3.122 × 10⁻⁵" rather than "3.122e-05"."""
+    value = float(value)
+    if not np.isfinite(value):
+        return str(value)
+    size = abs(value)
+    if size == 0 or 1e-3 <= size < 1e7:
+        decimals = 0 if size == 0 else max(0, digits - 1 - int(np.floor(np.log10(size))))
+        return f"{float(f'{value:.{digits}g}'):,.{decimals}f}"
+    mantissa, exponent = f"{value:.{digits - 1}e}".split("e")
+    return f"{mantissa} × 10{str(int(exponent)).translate(_SUPERSCRIPT)}"
+
+
+def angle_text(arcsec):
+    """An angle in arcsec as degrees, arcmin or arcsec, whichever reads
+    best, with its unit ("8.160 arcmin"); "unresolved" for none."""
+    if arcsec <= 0:
+        return "unresolved"
+    if arcsec >= 3600:
+        return f"{arcsec / 3600:.3f}°"
+    if arcsec >= 60:
+        return f"{arcsec / 60:.3f} arcmin"
+    return f"{arcsec:.3f} arcsec"
+
+
+def angle_pair(major, minor):
+    """A size as "major × minor", the unit said once when both share it."""
+    first, second = angle_text(major), angle_text(minor)
+    unit = first.rpartition(" ")[2]
+    if " " in first and second.endswith(" " + unit):
+        return f"{first.rpartition(' ')[0]} × {second}"
+    return f"{first} × {second}"
+
+
+class FitResultDialog(QDialog):
+    """The fitted Gaussian as rows of name and value, the deconvolved size
+    in a block of its own, with a button copying them as text."""
+
+    def __init__(self, parent, component, deconvolved=()):
+        super().__init__(parent)
+        self.setWindowTitle("Fit result")
+        layout = dialog_layout(self)
+        longest = max((name for name, _ in list(component) + list(deconvolved)), key=len)
+        lines = ["2D Gaussian fit"]
+        for title, rows in (("Fitted component", component), ("Deconvolved from the beam", deconvolved)):
+            if not rows:
+                continue
+            grid = form_block(layout, title, longest=longest)
+            for row, (name, value) in enumerate(rows):
+                grid.addWidget(field_label(name), row, 0)
+                label = QLabel(value)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                grid.addWidget(label, row, 1)
+            lines.append("")
+            lines.append(title)
+            lines.extend(f"{name}: {value}" for name, value in rows)
+        self.text = "\n".join(lines)
+        box, buttons = button_bar(secondary=("Close", self.accept), extras=(("Copy", self.copy),))
+        self.copy_button = buttons["Copy"]
+        layout.addWidget(box)
+        layout.setSizeConstraint(QLayout.SetFixedSize)
+
+    def copy(self):
+        QApplication.clipboard().setText(self.text)
+        self.copy_button.setText("Copied")
+        QTimer.singleShot(1500, lambda: self.copy_button.setText("Copy"))
+
+
+def show_fit_result(parent, component, deconvolved=()):
+    """Show the fit's rows in a FitResultDialog until it is closed."""
+    FitResultDialog(parent, component, deconvolved).exec_()
 
 
 def run_imfit_process(command, env, cwd, stop, result_file, timeout=120):
@@ -122,16 +224,7 @@ class FittingMixin:
             )
 
         # Ask user about zero-level offset
-        reply = QMessageBox.question(
-            self,
-            "Fitting options",
-            f"{note}Fit zero-level offset (background)?\n\n"
-            "Yes: Fit a constant background level\n"
-            "No: Assume zero background",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        dooff = reply == QMessageBox.Yes
+        dooff = ask_fit_offset(self, note)
 
         try:
             # Box format: 'x1,y1,x2,y2' (pixel coordinates)
@@ -382,8 +475,6 @@ class FittingMixin:
                 )
                 print(f"  {'Position Angle (deg)':<25} {beam_pa:>25.2f}")
 
-            deconv_info = ""
-            deconv_theta_info = ""
             if deconv_major > 0 or deconv_minor > 0:
                 print("-" * 70)
                 print("  IMAGE COMPONENT SIZE (deconvolved from beam):")
@@ -417,17 +508,6 @@ class FittingMixin:
                 else:
                     print(f"  {'Position Angle (deg)':<25} {'N/A':>25}")
 
-                # Build deconv info for GUI
-                deconv_maj_str = (
-                    format_smart_arcsec(deconv_major) if deconv_major > 0 else "Unres"
-                )
-                deconv_min_str = (
-                    format_smart_arcsec(deconv_minor) if deconv_minor > 0 else "Unres"
-                )
-                deconv_info = f"\nDeconv: {deconv_maj_str} × {deconv_min_str}"
-                if deconv_pa is not None:
-                    deconv_theta_info = f"\nDeconv PA: {deconv_pa:.1f}°"
-
             print("-" * 70)
             print("  FLUX:")
             flux_str = f"{flux:.4g} {flux_unit}"
@@ -450,23 +530,25 @@ class FittingMixin:
 
             end_busy()
 
-            # GUI message (compact version)
-            position = f"{ra_hms}, {dec_dms}"
+            # The window's rows (the whole table is in the log above)
             if current_tab._is_already_hpc():
                 # (imfit's longitude and latitude are Solar-X and Y here)
                 solar_x = ((ra_deg + 180.0) % 360.0 - 180.0) * 3600.0
-                position = f'Solar-X {solar_x:.1f}", Solar-Y {dec_deg * 3600.0:.1f}"'
-            msg = (
-                f"2D Gaussian Fit:\n"
-                f"Position: {position}\n"
-                f"Size: {format_smart_arcsec(major_arcsec)} × {format_smart_arcsec(minor_arcsec)}\n"
-                f"PA: {pa_deg:.1f}°\n"
-                f"Flux: {flux:.4g} {flux_unit}"
-                f"{deconv_info}"
-                f"{deconv_theta_info}"
-            )
+                position = [("Solar-X", f"{solar_x:.1f} arcsec"), ("Solar-Y", f"{dec_deg * 3600.0:.1f} arcsec")]
+            else:
+                position = [("RA", ra_hms), ("Dec", dec_dms)]
+            component = position + [
+                ("Size", angle_pair(major_arcsec, minor_arcsec)),
+                ("Position angle", f"{pa_deg:.1f}°"),
+                ("Flux", f"{readable_number(flux)} {flux_unit}"),
+            ]
+            deconvolved = []
+            if deconv_major > 0 or deconv_minor > 0:
+                deconvolved.append(("Size", angle_pair(deconv_major, deconv_minor)))
+                if deconv_pa is not None:
+                    deconvolved.append(("Position angle", f"{deconv_pa:.1f}°"))
 
-            QMessageBox.information(self, "Fit result", msg)
+            show_fit_result(self, component, deconvolved)
             self.statusBar().showMessage("Gaussian fit completed", 3000)
 
         except subprocess.TimeoutExpired:

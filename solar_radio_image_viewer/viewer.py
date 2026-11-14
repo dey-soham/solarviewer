@@ -48,7 +48,7 @@ from .tools import (
     ProfileMixin,
     TbModeMixin,
     AnnotationsMixin,
-    AnnotationDialogsMixin,
+    AnnotationCommandsMixin,
     FittingMixin,
     HpcViewMixin,
     SolarDiskMixin,
@@ -370,9 +370,13 @@ class SolarRadioImageTab(
 
     def update_tab_name_from_path(self, path):
         """The pane shows the image at ``path``: its tab is named after it
-        (through the page, which names the tab for its panes)."""
+        (through the page, which names the tab for its panes). A copy made
+        for another unit or frame keeps the name of the image it is of."""
+        from .core.compare import is_own_copy, pane_name
+
         if path and self.page is not None:
-            self.page.pane_renamed(self, os.path.basename(path.rstrip("/")))
+            name = pane_name(self) if is_own_copy(path) else ""
+            self.page.pane_renamed(self, name or os.path.basename(path.rstrip("/")))
 
     def schedule_plot(self, done=None):
         """Draw from the controls in a moment; then the status bar says
@@ -1132,10 +1136,13 @@ class SolarRadioImageTab(
             if hasattr(viewer, "_plot_customization_dialog"):
                 viewer._plot_customization_dialog = None
 
-        # Replace the standard button box with Apply/Close
+        # Its buttons here apply at once and leave the window open
         button_box = dialog.findChild(QDialogButtonBox)
         if button_box:
-            bar, _ = button_bar(primary=("Apply", on_apply), secondary=("Close", on_close))
+            bar, _ = button_bar(
+                primary=("Apply", on_apply), secondary=("Close", on_close),
+                extras=[("Reset to defaults", dialog.reset_to_defaults)],
+            )
             button_box.parentWidget().layout().replaceWidget(button_box, bar)
             button_box.deleteLater()
 
@@ -1258,7 +1265,7 @@ class SolarRadioImageViewerApp(
     MenusMixin,
     HelpMixin,
     WindowDialogsMixin,
-    AnnotationDialogsMixin,
+    AnnotationCommandsMixin,
     FittingMixin,
     ExportsMixin,
     ExternalToolsMixin,

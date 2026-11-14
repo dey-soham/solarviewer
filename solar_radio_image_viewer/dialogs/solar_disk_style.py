@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 
 from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
+from .beam_settings import OVERLAY_LONGEST
 from .form import color_combo, field_label, form_block
 
 _COLORS = ["yellow", "white", "red", "green", "blue", "cyan", "magenta", "black"]
@@ -32,7 +33,7 @@ class SolarDiskStyleWidget(QWidget):
         style_layout = QVBoxLayout(self)
         style_layout.setContentsMargins(0, 0, 0, 0)
 
-        line_layout = form_block(style_layout)
+        line_layout = form_block(style_layout, longest=OVERLAY_LONGEST)
 
         # Color selection
         extra = [] if style["color"] in _COLORS else [style["color"]]

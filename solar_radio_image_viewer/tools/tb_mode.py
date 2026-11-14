@@ -163,7 +163,7 @@ class TbModeMixin:
                 end_busy()
                 if shown:
                     self.show_status_message(
-                        "Showing flux (Jy/beam) - click TB to revert"
+                        "Showing flux density (Jy/beam)"
                     )
 
             else:
@@ -215,7 +215,7 @@ class TbModeMixin:
                 end_busy()
                 if shown:
                     self.show_status_message(
-                        "Showing brightness temperature (K) - click FLUX to revert"
+                        "Showing brightness temperature (K)"
                     )
 
         except Cancelled:

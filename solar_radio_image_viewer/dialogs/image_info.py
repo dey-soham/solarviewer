@@ -1,9 +1,7 @@
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
-    QHBoxLayout,
     QLineEdit,
-    QLabel,
     QPlainTextEdit,
     QWidget,
     QTabWidget,
@@ -15,8 +13,8 @@ import os
 
 from PyQt5.QtCore import Qt
 
-from ..ui.widgets import button_bar, dialog_layout
-from ..ui.styles import set_hand_cursor
+from ..ui.widgets import ElidedLabel, button_bar, dialog_layout
+from ..ui.styles import SPACE_S, set_hand_cursor
 
 
 from ..ui.geometry import fit_to_screen
@@ -42,15 +40,8 @@ class ImageInfoDialog(QDialog):
 
         # Source Info
         if hasattr(self, "imagename") and self.imagename:
-            source_container = QWidget()
-            source_layout = QHBoxLayout(source_container)
-            source_layout.setContentsMargins(0, 5, 0, 10)
-            
-            source_label = QLabel(os.path.basename(self.imagename))
-            source_label.setObjectName("Badge")
-            source_layout.addWidget(source_label)
-            source_layout.addStretch()
-            layout.addWidget(source_container)
+            # The file's name as a plain line (a pill read as a button)
+            layout.addWidget(ElidedLabel(os.path.basename(self.imagename), "DetailName"))
 
         # Check if we have structured metadata (dict) or plain text
         if isinstance(self.metadata, dict) and self.metadata:
@@ -120,12 +111,6 @@ class ImageInfoDialog(QDialog):
         for row, (key, value) in enumerate(section_data.items()):
             key_item = QTableWidgetItem(str(key))
             value_item = QTableWidgetItem(str(value))
-
-            # Make key bold
-            font = key_item.font()
-            font.setBold(True)
-            key_item.setFont(font)
-
             table.setItem(row, 0, key_item)
             table.setItem(row, 1, value_item)
 
@@ -138,15 +123,12 @@ class ImageInfoDialog(QDialog):
         """Create a searchable view for raw header data."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(0, SPACE_S, 0, 0)
 
-        # Search box
-        search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("Search"))
+        # Search box (its placeholder names it)
         search_edit = QLineEdit()
         search_edit.setPlaceholderText("Filter headers…")
-        search_layout.addWidget(search_edit)
-        layout.addLayout(search_layout)
+        layout.addWidget(search_edit)
 
         # Table
         table = QTableWidget()

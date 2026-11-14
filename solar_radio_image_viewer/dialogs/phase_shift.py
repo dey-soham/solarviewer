@@ -27,7 +27,7 @@ from ..ui.background import Cancelled, run_in_background
 from ..ui.batch import BatchWindow, _escape, _short_home, output_name
 from ..ui.errors import show_error
 from ..ui.open_image import choose_image
-from ..ui.widgets import kicker
+from ..ui.widgets import PathEdit, kicker
 
 STOKES = ("I", "Q", "U", "V", "All four")
 
@@ -68,7 +68,7 @@ class PhaseShiftDialog(BatchWindow):
         self.single_file_widget = QWidget()
         single = QVBoxLayout(self.single_file_widget)
         single.setContentsMargins(0, 0, 0, 0)
-        self.image_path_edit = QLineEdit(imagename or "")
+        self.image_path_edit = PathEdit(imagename or "")
         self.image_path_edit.setPlaceholderText("A FITS file or CASA image")
         single.addLayout(self.path_row(self.image_path_edit, self.browse_image, "Image"))
         layout.addWidget(self.single_file_widget)
@@ -76,10 +76,10 @@ class PhaseShiftDialog(BatchWindow):
         batch = QVBoxLayout(self.batch_file_widget)
         batch.setContentsMargins(0, 0, 0, 0)
         batch.setSpacing(10)
-        self.reference_image_edit = QLineEdit("")
+        self.reference_image_edit = PathEdit("")
         self.reference_image_edit.setPlaceholderText("The image the shift is worked out from")
         batch.addLayout(self.path_row(self.reference_image_edit, self.browse_reference_image, "Reference"))
-        self.dir_edit = QLineEdit(folder)
+        self.dir_edit = PathEdit(folder)
         self.dir_edit.setPlaceholderText("The folder the images are in")
         batch.addLayout(self.path_row(self.dir_edit, self.browse_directory, "Folder"))
         self.dir_edit.editingFinished.connect(lambda: self.input_folder_chosen(self.dir_edit.text()))
@@ -153,7 +153,7 @@ class PhaseShiftDialog(BatchWindow):
         self.single_output_widget = QWidget()
         single = QVBoxLayout(self.single_output_widget)
         single.setContentsMargins(0, 0, 0, 0)
-        self.output_path_edit = QLineEdit("")
+        self.output_path_edit = PathEdit("")
         self.output_path_edit.setPlaceholderText("centered_<name>.fits next to the image")
         single.addLayout(self.path_row(self.output_path_edit, self.browse_output, "File"))
         layout.addWidget(self.single_output_widget)
@@ -161,7 +161,7 @@ class PhaseShiftDialog(BatchWindow):
         batch = QVBoxLayout(self.batch_output_widget)
         batch.setContentsMargins(0, 0, 0, 0)
         batch.setSpacing(10)
-        self.out_dir_edit = QLineEdit(os.path.join(folder, "centered") if folder else "")
+        self.out_dir_edit = PathEdit(os.path.join(folder, "centered") if folder else "")
         self.out_dir_edit.setPlaceholderText("A folder, or a name for one inside the input folder")
         batch.addLayout(self.path_row(self.out_dir_edit, self.browse_output_directory, "Folder"))
         self.output_pattern_edit = QLineEdit("centered_*.fits")
@@ -173,6 +173,7 @@ class PhaseShiftDialog(BatchWindow):
         row.addWidget(self.output_pattern_edit, 1)
         hint = QLabel("* is the input's name")
         hint.setObjectName("Meta")
+        hint.setWordWrap(True)
         row.addWidget(hint)
         batch.addLayout(row)
         layout.addWidget(self.batch_output_widget)

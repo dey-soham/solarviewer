@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..dialogs.beam_settings import OVERLAY_LONGEST
 from ..dialogs.form import field_label, form_block
 from ..dialogs.solar_disk_style import SolarDiskStyleWidget
 from ..processing.image_meta import casa_obs_time
@@ -279,7 +280,7 @@ class SolarDiskMixin:
                     y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
                         f"HPC image: centre set to (0, 0)\n"
-                        f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
+                        f"Apparent diameter {diam:.2f}′ on {obs_time.iso[:19]}"
                     )
                 else:
                     if wcs_obj is None:
@@ -297,8 +298,8 @@ class SolarDiskMixin:
                     auto_info.setText(
                         f"Sun RA {ra_deg:.4f}°, Dec {dec_deg:.4f}°"
                         f" (seen from {seen_from or 'the centre of the Earth'})\n"
-                        f"Pixel ({cx:.1f}, {cy:.1f})\n"
-                        f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
+                        f"At pixel ({cx:.1f}, {cy:.1f})\n"
+                        f"Apparent diameter {diam:.2f}′ on {obs_time.iso[:19]}"
                     )
                 return True
             except Exception as e:
@@ -318,7 +319,7 @@ class SolarDiskMixin:
         auto_checkbox.toggled.connect(on_auto_toggle)
 
         # Center coordinates
-        center_layout = form_block(position_layout, pairs=2)
+        center_layout = form_block(position_layout, pairs=2, longest=OVERLAY_LONGEST)
 
         x_label = field_label("Centre X")
         x_spinbox = QSpinBox()

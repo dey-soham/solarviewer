@@ -29,6 +29,8 @@ from ..ui.geometry import fit_to_screen
 from ..ui.plot_theme import style_figure
 from ..ui.styles import FONT_SMALL, SPACE_M, set_hand_cursor, theme_manager
 from ..ui.widgets import button_bar, dialog_layout
+from .geometry import HANDLES, TURN_STEP, handle_points
+from .geometry import turned as _turned
 from .preview import contrast_colors
 
 # The histogram redraws this long after the last change of its bins
@@ -38,18 +40,29 @@ POISSON_POINTS = 2000
 NO_REGION_HINT = "No selection. Draw a rectangle or ellipse on the image."
 # A drag shorter than this (screen pixels) either way is a click
 CLICK_PX = 3
+
+
+def _place(centre, width, height, turn=""):
+    """What the Statistics tab says of where a region is: its ``centre`` in
+    the image's frame, and its size in arcsec."""
+    return f"Centre: {centre}\nSize: {width:.1f}″ × {height:.1f}″{turn}"
+
+
+def shift_held(event):
+    """Whether Shift is down for the Matplotlib mouse ``event``: by the
+    mouse event itself, so that it counts wherever the keyboard focus is."""
+    gui = getattr(event, "guiEvent", None)
+    if gui is not None and hasattr(gui, "modifiers"):
+        return bool(gui.modifiers() & Qt.ShiftModifier)
+    return "shift" in (event.key or "")
 # The selected region's handles: their size, and how near the mouse must be
 # to grab one (screen pixels)
 HANDLE_PX = 7
 GRAB_PX = 6
-# Which sides of the region's box each handle moves, (x side, y side) with
-# 0 the low side, 1 the high side and None neither; the corners first
-HANDLES = ((0, 0), (1, 0), (1, 1), (0, 1), (None, 0), (1, None), (None, 1), (0, None))
-# The selected ellipse's round handle, which turns it: how far out from its
-# box it is and its radius (screen pixels), and the steps Shift turns it by
+# The selected region's round handle, which turns it: how far out from its
+# box it is and its radius (screen pixels); Shift turns it by TURN_STEP
 TURN_PX = 22
 TURN_RADIUS = 4.5
-TURN_STEP = 15
 _keys = itertools.count(1)
 _turn_cursors = {}
 
@@ -69,17 +82,6 @@ def _box(corners):
 def _centre(corners):
     x1, y1, x2, y2 = corners
     return ((x1 + x2) / 2, (y1 + y2) / 2)
-
-
-def _turned(points, centre, angle):
-    """``points`` turned ``angle`` degrees anticlockwise (in pixels of the
-    image) about ``centre``."""
-    if not angle:
-        return [(float(x), float(y)) for x, y in points]
-    t = math.radians(angle)
-    c, s = math.cos(t), math.sin(t)
-    cx, cy = centre
-    return [(cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c) for x, y in points]
 
 
 class Region:
@@ -125,15 +127,6 @@ def region_outline(shape, corners, angle=0.0):
         cx, cy, a, b = (x1 + x2) / 2, (y1 + y2) / 2, abs(x2 - x1) / 2, abs(y2 - y1) / 2
         points = list(zip(cx + a * np.cos(t), cy + b * np.sin(t)))
     return _turned(points, _centre(corners), angle)
-
-
-def handle_points(corners, angle=0.0):
-    """Where the handles of a region in the box ``corners`` turned by
-    ``angle`` are (pixels of the image), in the order of HANDLES."""
-    x1, y1, x2, y2 = corners
-    xs, ys = (x1, x2, (x1 + x2) / 2), (y1, y2, (y1 + y2) / 2)
-    points = [(xs[2 if hx is None else hx], ys[2 if hy is None else hy]) for hx, hy in HANDLES]
-    return _turned(points, (xs[2], ys[2]), angle)
 
 
 def resized(corners, handle, x, y, angle=0.0):
@@ -202,25 +195,16 @@ def turn_cursor(dpr):
     return cursor
 
 
-class RegionLayer(QWidget):
-    """A pane's regions, drawn in Qt over its canvas.
-
-    Drawing, selecting, moving or deleting a region, or moving the view,
-    repaints this layer alone; the Matplotlib figure is never redrawn for
-    it. Each region is a thin line over a soft halo, in the colours that
-    contrast with the image. With the Rectangle or Ellipse tool, the
-    selected region is drawn stronger, faintly filled, with handles to
-    resize it and a round one to turn it; with the other tools every region
-    looks the same.
-    """
+class CanvasOverlay(QWidget):
+    """A layer over a pane's canvas, the size of it, that the mouse goes
+    through: what is drawn on it in Qt lies over the image where it is in
+    pixels of the image, and is painted again without the Matplotlib figure
+    being drawn."""
 
     def __init__(self, tab):
         super().__init__(tab.canvas)
         self._tab = tab
-        self.preview = None  # (shape, corners) of a region being drawn
-        self.edited = None  # (region, corners, angle) of a region being moved, resized or turned
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        tab.canvas.region_layer = self  # (the canvas's other overlays raise it)
         tab.canvas.installEventFilter(self)
         self.setGeometry(tab.canvas.rect())
         self.show()
@@ -231,7 +215,7 @@ class RegionLayer(QWidget):
         return False
 
     def refresh(self):
-        """Paint again (the regions, the view or the image changed)."""
+        """Paint again (what is on it, the view or the image changed)."""
         self.raise_()
         self.update()  # (the whole layer: a part would repaint a part of the canvas)
 
@@ -243,10 +227,21 @@ class RegionLayer(QWidget):
         fig_h = tab.canvas.figure.bbox.height
         return [QPointF(px / dpr, (fig_h - py) / dpr) for px, py in ax.transData.transform(points)]
 
+    def from_display(self, px, py):
+        """A point in Matplotlib's display pixels in this layer's."""
+        canvas = self._tab.canvas
+        dpr = canvas.device_pixel_ratio
+        return QPointF(px / dpr, (canvas.figure.bbox.height - py) / dpr)
+
+    def axes_rect(self):
+        """The plot area in this layer's pixels: what is drawn is kept to it."""
+        x0, y0, w, h = self._tab._nav_axes().bbox.bounds
+        return QRectF(self.from_display(x0, y0 + h), self.from_display(x0 + w, y0))
+
     def shown_handles(self, corners, angle=0.0):
-        """The handles shown on a region in the box ``corners`` turned by
-        ``angle``, as (index, point in this layer); the side handles only
-        when the region is long enough on screen for them."""
+        """The handles shown on a box ``corners`` turned by ``angle``, as
+        (index, point in this layer); the side handles only when the box is
+        long enough on screen for them."""
         points = self.to_widget(handle_points(corners, angle))
         width = math.hypot(points[1].x() - points[0].x(), points[1].y() - points[0].y())
         height = math.hypot(points[3].x() - points[0].x(), points[3].y() - points[0].y())
@@ -274,15 +269,49 @@ class RegionLayer(QWidget):
             dx, dy, length = 0.0, -1.0, 1.0
         return QPointF(foot.x() + dx / length * TURN_PX, foot.y() + dy / length * TURN_PX), foot
 
+    def draw_handles(self, painter, corners, angle, line, halo, indexes=None, knob=True):
+        """The handles of a box (those in ``indexes``, or all that show),
+        and with ``knob`` the round one that turns it, on a stalk."""
+        if knob:
+            knob_at, foot = self.turn_handle(corners, angle)
+            painter.setPen(QPen(halo, 3.0, Qt.SolidLine, Qt.FlatCap))
+            painter.drawLine(foot, knob_at)
+            painter.setPen(QPen(line, 1.0, Qt.SolidLine, Qt.FlatCap))
+            painter.drawLine(foot, knob_at)
+        painter.setPen(QPen(halo, 1.0))
+        painter.setBrush(line)
+        half = HANDLE_PX / 2
+        for index, point in self.shown_handles(corners, angle):
+            if indexes is None or index in indexes:
+                painter.drawRect(QRectF(point.x() - half, point.y() - half, HANDLE_PX, HANDLE_PX))
+        if knob:
+            painter.drawEllipse(knob_at, TURN_RADIUS, TURN_RADIUS)
+
+
+class RegionLayer(CanvasOverlay):
+    """A pane's regions, drawn in Qt over its canvas.
+
+    Drawing, selecting, moving or deleting a region, or moving the view,
+    repaints this layer alone; the Matplotlib figure is never redrawn for
+    it. Each region is a thin line over a soft halo, in the colours that
+    contrast with the image. With the Rectangle or Ellipse tool, the
+    selected region is drawn stronger, faintly filled, with handles to
+    resize it and a round one to turn it; with the other tools every region
+    looks the same.
+    """
+
+    def __init__(self, tab):
+        super().__init__(tab)
+        self.preview = None  # (shape, corners) of a region being drawn
+        self.edited = None  # (region, corners, angle) of a region being moved, resized or turned
+        tab.canvas.region_layer = self  # (the canvas's other overlays raise it)
+
     def paintEvent(self, event):
         tab = self._tab
         ax = tab._nav_axes()
         if ax is None or not (tab.regions or self.preview):
             return
-        dpr = tab.canvas.device_pixel_ratio
-        fig_h = tab.canvas.figure.bbox.height
-        x0, y0, w, h = ax.bbox.bounds
-        clip = QRectF(QPointF(x0 / dpr, (fig_h - y0 - h) / dpr), QPointF((x0 + w) / dpr, (fig_h - y0) / dpr))
+        clip = self.axes_rect()
         line, halo = (QColor(c) for c in contrast_colors(tab))
         selected = tab.selected_region if tab._region_tool() else None
         edited, edited_corners, edited_angle = self.edited or (None, None, None)
@@ -310,18 +339,8 @@ class RegionLayer(QWidget):
                 painter.setPen(QPen(faint, 1.0))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawPolygon(QPolygonF(self.to_widget(region_outline("rect", corners, angle))))
-            # The round handle that turns it, on a stalk from its box
-            knob, foot = self.turn_handle(corners, angle)
-            painter.setPen(QPen(halo, 3.0, Qt.SolidLine, Qt.FlatCap))
-            painter.drawLine(foot, knob)
-            painter.setPen(QPen(line, 1.0, Qt.SolidLine, Qt.FlatCap))
-            painter.drawLine(foot, knob)
-            painter.setPen(QPen(halo, 1.0))
-            painter.setBrush(line)
-            half = HANDLE_PX / 2
-            for _index, point in self.shown_handles(corners, angle):
-                painter.drawRect(QRectF(point.x() - half, point.y() - half, HANDLE_PX, HANDLE_PX))
-            painter.drawEllipse(knob, TURN_RADIUS, TURN_RADIUS)
+            # Its handles, and the round one that turns it on a stalk from its box
+            self.draw_handles(painter, corners, angle, line, halo)
         if self.preview is not None:
             self._outline(painter, region_outline(*self.preview), line, halo, strong=True)
         painter.end()
@@ -385,13 +404,13 @@ class RoiStatsMixin:
 
         if self.window():
             self.show_status_message(
-                f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}, RMS={rrms:.4g}"
+                f"Region: {roi.size} pixels · mean {rmean:.4g} · sum {rsum:.4g} · RMS {rrms:.4g}"
             )
 
     def _show_roi_histogram(self):
         """Show histogram of pixel values in current ROI with fitting options"""
         if self.current_roi is None or self.current_image_data is None:
-            QMessageBox.warning(self, "No ROI", "Please select a region first")
+            QMessageBox.warning(self, "No region", "Draw a region first, with the Rectangle or Ellipse tool")
             return
 
         # The pixels the statistics are of
@@ -399,9 +418,7 @@ class RoiStatsMixin:
         roi_flat = roi_flat[np.isfinite(roi_flat)]  # (a ratio can be inf too)
 
         if roi_flat.size == 0:
-            QMessageBox.warning(
-                self, "Empty ROI", "Selected region contains no valid data"
-            )
+            QMessageBox.warning(self, "Empty region", "The region has no valid pixels in it")
             return
 
         with busy("Preparing the histogram…", self):
@@ -417,7 +434,7 @@ class RoiStatsMixin:
 
         # Create dialog - resizable
         dialog = QDialog(self)
-        dialog.setWindowTitle("ROI histogram")
+        dialog.setWindowTitle("Region histogram")
         set_hand_cursor(dialog)
         dialog.setMinimumSize(600, 400)
         fit_to_screen(dialog, 800, 650)
@@ -643,7 +660,7 @@ class RoiStatsMixin:
 
             ax.set_xlabel("Pixel value")
             ax.set_ylabel("Count")
-            ax.set_title(f"ROI histogram ({roi_flat.size:,} pixels)")
+            ax.set_title(f"Region histogram ({roi_flat.size:,} pixels)")
             ax.grid(True, alpha=0.3)
 
             style_figure(fig)
@@ -846,6 +863,7 @@ class RoiStatsMixin:
         return (
             getattr(self, "region_mode", RegionMode.PAN) in (RegionMode.RECTANGLE, RegionMode.ELLIPSE)
             and not self._in_measurement_mode()
+            and not getattr(self, "annotating", False)
         )
 
     # ------------------------------------------------------------------
@@ -923,7 +941,7 @@ class RoiStatsMixin:
         layer = self._region_layer
         grab = press["grab"]
         if grab is None:
-            if "shift" in (event.key or ""):  # a square or a circle
+            if shift_held(event):  # a square or a circle
                 side = max(abs(x - x0), abs(y - y0))
                 x = x0 + np.copysign(side, x - x0)
                 y = y0 + np.copysign(side, y - y0)
@@ -938,7 +956,7 @@ class RoiStatsMixin:
                 x1, y1, x2, y2 = corners
                 corners = (x1 + x - x0, y1 + y - y0, x2 + x - x0, y2 + y - y0)
             elif grab[0] == "turn":
-                angle = turned_to(region, (x0, y0), (x, y), snap="shift" in (event.key or ""))
+                angle = turned_to(region, (x0, y0), (x, y), snap=shift_held(event))
             else:
                 corners = resized(corners, grab[1], x, y, angle)
             layer.edited = (region, corners, angle)
@@ -1041,10 +1059,7 @@ class RoiStatsMixin:
                     sy = center_wy * 3600.0
                     w_arcsec = w_degrees * 3600.0
                     h_arcsec = h_degrees * 3600.0
-                    ra_dec_info = (
-                        f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
-                        f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
-                    )
+                    ra_dec_info = _place(f"Solar X {sx:.1f}″, Solar Y {sy:.1f}″", w_arcsec, h_arcsec)
                 elif "HPLN" in ctype1_roi:
                     # Unwrap helioprojective to [-180, 180]
                     center_wx = ((center_wx + 180.0) % 360.0) - 180.0
@@ -1053,20 +1068,17 @@ class RoiStatsMixin:
                     hy = center_wy * 3600.0
                     w_arcsec = w_degrees * 3600.0
                     h_arcsec = h_degrees * 3600.0
-                    ra_dec_info = (
-                        f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
-                        f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
-                    )
+                    ra_dec_info = _place(f"Solar X {hx:.1f}″, Solar Y {hy:.1f}″", w_arcsec, h_arcsec)
                 else:
                     center_coord = SkyCoord(
                         ra=center_wx * u.degree, dec=center_wy * u.degree
                     )
                     width = w_degrees * u.degree
                     height = h_degrees * u.degree
-                    ra_dec_info = (
-                        f"Centre: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
-                        f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                        f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
+                    ra_dec_info = _place(
+                        f"RA {center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Dec {center_coord.dec.to_string(sep=':', precision=1)}",
+                        width.to_value(u.arcsec), height.to_value(u.arcsec),
                     )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
@@ -1157,9 +1169,8 @@ class RoiStatsMixin:
                 if "SOLAR" in ctype1_ell:
                     sx = wx_c * 3600.0
                     sy = wy_c * 3600.0
-                    ra_dec_info = (
-                        f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
-                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
+                    ra_dec_info = _place(
+                        f"Solar X {sx:.1f}″, Solar Y {sy:.1f}″", angular_width, angular_height, turn
                     )
                 elif "HPLN" in ctype1_ell:
                     # Unwrap helioprojective to [-180, 180]
@@ -1167,16 +1178,15 @@ class RoiStatsMixin:
                     wy_c = ((wy_c + 180.0) % 360.0) - 180.0
                     hx = wx_c * 3600.0
                     hy = wy_c * 3600.0
-                    ra_dec_info = (
-                        f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
-                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
+                    ra_dec_info = _place(
+                        f"Solar X {hx:.1f}″, Solar Y {hy:.1f}″", angular_width, angular_height, turn
                     )
                 else:
                     center_coord = SkyCoord(ra=wx_c * u.degree, dec=wy_c * u.degree)
-                    ra_dec_info = (
-                        f"Centre: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
-                        f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
+                    ra_dec_info = _place(
+                        f"RA {center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Dec {center_coord.dec.to_string(sep=':', precision=1)}",
+                        angular_width, angular_height, turn,
                     )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"

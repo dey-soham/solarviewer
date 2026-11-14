@@ -46,6 +46,8 @@ class SpectraMasksMixin:
     ``revertToOriginal``, ``rfiSlider``, ``roiButton``, ``_update_status_summary``
     """
 
+    MOST_FLAGGED = 0.5  # a page's share flagged above which the message says how to flag less
+
     def _masks_file(self):
         """Where the open file's masks are kept between sessions (by the
         file: path, size and time; on a server, its host too)."""
@@ -409,14 +411,30 @@ class SpectraMasksMixin:
             f"Noise not proportional to power ({noise_name} image)" if noise_name
             else "Noise not proportional to power (the file has no noise image)"
         )
-        noise.setChecked(o["noise"])
+        # (off while there is nothing for it to read; the choice is kept
+        # for a file with a noise image)
+        noise.setChecked(o["noise"] and noise_name is not None)
         noise.setEnabled(noise_name is not None)
         noise.setToolTip("Each pixel's std/mean against nearby channels'")
         for w in (convrfi, edges, sumthr, noise):
             dl.addWidget(w)
         layout.addWidget(detectors)
 
-        after = QGroupBox("Then")
+        # The two forms' fields in one column: names as wide as the longest
+        names = {
+            text: QLabel(text)
+            for text in ("Fill gaps between flags", "Whole channel if flagged over",
+                         "Whole time if flagged over", "Fill", "Reach")
+        }
+        for label in names.values():
+            label.ensurePolished()  # (in the stylesheet's font, to be measured)
+        name_width = max(label.sizeHint().width() for label in names.values())
+
+        def named(text):
+            names[text].setMinimumWidth(name_width)
+            return names[text]
+
+        after = QGroupBox("Extend the flags")
         al = QFormLayout(after)
         al.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
         gaps = QDoubleSpinBox()
@@ -424,20 +442,23 @@ class SpectraMasksMixin:
         gaps.setSingleStep(0.05)
         gaps.setValue(o["fill_gaps"])
         gaps.setSpecialValueText("off")
-        gaps.setToolTip("Flag gaps mostly surrounded by flags (0: off)")
-        al.addRow("Fill gaps (eta)", gaps)
+        gaps.setToolTip(
+            "Flag gaps mostly surrounded by flags: the share of a stretch that may "
+            "be unflagged (the rank operator's eta; 0: off)"
+        )
+        al.addRow(named("Fill gaps between flags"), gaps)
         channels = QSpinBox()
         channels.setRange(10, 100)
         channels.setSuffix(" %")
         channels.setValue(int(round(o["channel_limit"] * 100)))
         channels.setToolTip("Flag a whole channel above this share (100: off)")
-        al.addRow("Whole channels above", channels)
+        al.addRow(named("Whole channel if flagged over"), channels)
         times = QSpinBox()
         times.setRange(10, 100)
         times.setSuffix(" %")
         times.setValue(int(round(o["time_limit"] * 100)))
         times.setToolTip("Flag a whole time above this share (100: off)")
-        al.addRow("Whole times above", times)
+        al.addRow(named("Whole time if flagged over"), times)
         layout.addWidget(after)
 
         pixels = QGroupBox("Flagged pixels")
@@ -452,7 +473,7 @@ class SpectraMasksMixin:
             fillCombo.addItem(text, value)
         fillCombo.setCurrentIndex(max(0, fillCombo.findData(o["fill"])))
         fillCombo.setToolTip("Fill from good pixels around, in time and frequency")
-        pl.addRow("Fill", fillCombo)
+        pl.addRow(named("Fill"), fillCombo)
         maxGap = QSpinBox()
         maxGap.setRange(1, 50)
         maxGap.setValue(int(o["reach"]))
@@ -460,7 +481,7 @@ class SpectraMasksMixin:
         maxGap.setToolTip("Farther from any good pixel: left blank")
         maxGap.setEnabled(o["fill"] != "blank")
         fillCombo.currentIndexChanged.connect(lambda _: maxGap.setEnabled(fillCombo.currentData() != "blank"))
-        pl.addRow("Reach", maxGap)
+        pl.addRow(named("Reach"), maxGap)
         mask_note = QLabel("Masks you draw always stay blank.")
         mask_note.setObjectName("Hint")
         pl.addRow(mask_note)
@@ -486,7 +507,8 @@ class SpectraMasksMixin:
             return
         self._rfi_options.update(
             convrfi=convrfi.isChecked(), edges=edges.isChecked(),
-            sumthreshold=sumthr.isChecked(), noise=noise.isChecked(),
+            sumthreshold=sumthr.isChecked(),
+            noise=noise.isChecked() if noise.isEnabled() else o["noise"],
             fill_gaps=float(gaps.value()),
             channel_limit=channels.value() / 100.0, time_limit=times.value() / 100.0,
             tint=tint.isChecked(), share=share.isChecked(),
@@ -532,7 +554,16 @@ class SpectraMasksMixin:
             if self._rfi_enabled and self._shown_raw is not None and self._shown_raw[0] is data:
                 self._redisplay()
                 shown = self._rfi_page_flags if self._rfi_page_flags is not None else flags
-                self.statusBar().showMessage(f"RFI flagged: {shown.mean():.1%} of this page", 5000)
+                share = float(shown.mean())
+                if share <= self.MOST_FLAGGED:
+                    self.statusBar().showMessage(f"RFI flagged: {share:.1%} of this page", 5000)
+                else:
+                    # (few channels far apart, or steep steps between them,
+                    # read as edges to ConvRFI: say how to flag less, or undo)
+                    self.statusBar().showMessage(
+                        f"RFI flagged: {share:.1%} of this page, most of it. To flag less, turn off "
+                        "Sharp edges in Settings…; to undo, click Auto-flag page again", 15000
+                    )
 
         def failed(message):
             if self._rfi_job is job:

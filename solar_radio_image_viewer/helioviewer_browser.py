@@ -552,7 +552,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.diff_base_index = 0
         self._diff_cache: "OrderedDict[tuple, QPixmap]" = OrderedDict()
         self._compact = False
-        self._footer_compact = False
+        self._footer_compact = 0  # which footer labels are short (_footer_short)
         self._jobs = OrderedDict()
         self._closing = False
         self._close_after_export = False
@@ -601,7 +601,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([400, 1000])
         page = QVBoxLayout()
-        page.setContentsMargins(SPACE_L, SPACE_S, SPACE_L, 0)
+        page.setContentsMargins(SPACE_L, SPACE_S, SPACE_L, SPACE_S)  # (both columns clear of the footer)
         page.setSpacing(SPACE_S)
         page.addWidget(self.splitter, 1)
         layout.addLayout(page, 1)
@@ -973,7 +973,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         for i, mode in enumerate(DIFF_MODES):
             button = QPushButton(mode)
             button.setCheckable(True)
-            button.setProperty("labels", (mode, {"Base = radio time": "Base=radio", "Running": "Run"}.get(mode, mode)))
+            button.setProperty("labels", (mode, {"Base = radio time": "Base=radio"}.get(mode, mode)))
             self.diff_group.addButton(button, i)
             self.diff_buttons.append(button)
         self.diff_buttons[0].setChecked(True)
@@ -994,7 +994,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.set_base_link.hide()
         layout.addWidget(self.set_base_link)
         self.reframe_btn = QPushButton("Reframe")
-        self.reframe_btn.setProperty("labels", ("Reframe", "Region"))
         self.reframe_btn.setCheckable(True)
         self.reframe_btn.setToolTip("Drag a box on the image to load that region at full detail (G)")
         self.reframe_btn.toggled.connect(self._reframe_toggled)
@@ -1025,7 +1024,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.save_btn.clicked.connect(self.save_current_frame)
         layout.addWidget(self.save_btn)
         self.export_btn = QPushButton("Export…")
-        self.export_btn.setProperty("labels", ("Export…", "Export"))
         self.export_btn.setToolTip("The frames as an MP4, a GIF or PNG files (Ctrl+E)")
         self.export_btn.clicked.connect(lambda: self.export_animation())
         layout.addWidget(self.export_btn)
@@ -1039,6 +1037,8 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.link_btn.setToolTip("The same view on helioviewer.org, to the clipboard")
         self.link_btn.clicked.connect(self.copy_helioviewer_link)
         layout.addWidget(self.link_btn)
+        for button in (self.save_btn, self.export_btn, self.use_btn, self.link_btn):
+            button.setEnabled(False)  # (until there are frames: _enable_transport)
         return bar
 
     def _zoom_button(self, icon, tip, slot):
@@ -1521,9 +1521,9 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
     def _size_columns(self):
         """The three columns in the list's width: the name column as wide as
-        the longest name, but never so wide that what an instrument shows or
-        when it has images is cut off (a long name is elided; its tooltip has
-        it whole)."""
+        the longest name, but never wider than half of what the cadence
+        leaves, so that what an instrument shows is not cut off for a few
+        long names (a long name is elided; its tooltip has it whole)."""
         metrics = self.tree.fontMetrics()
         header = self.tree.header()
         widest = max((metrics.horizontalAdvance(item.text(0)) for _group, item in self._items()), default=80)
@@ -1531,7 +1531,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         third = max((metrics.horizontalAdvance(item.text(2)) for _group, item in self._items()), default=40) + SPACE_L
         room = self.tree.viewport().width() or self.tree.width()
         if room > 0:
-            wanted = min(wanted, max(120, room - third - SHOWS_LEAST))
+            wanted = min(wanted, max(120, min(room - third - SHOWS_LEAST, (room - third) // 2)))
         header.resizeSection(0, wanted)
         header.resizeSection(2, third)
 
@@ -2037,7 +2037,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         for name in hvw.OVERLAYS:
             self.view.overlays[name] = self.toggles.switches[name].isChecked()
         self.view.set_coordinates_known(True)
-        self.link_btn.setEnabled(True)
+        self.link_btn.setEnabled(bool(self.frames))
         self.link_btn.setToolTip("The same view on helioviewer.org, to the clipboard")
 
     def _current_lwa(self, loader):
@@ -2246,8 +2246,13 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         show_error(self, "Helioviewer did not answer", "This is what the request came back with.", self._frame_error)
 
     def _enable_transport(self, on):
+        """The frame controls, and what saves or passes on a frame, with
+        frames to show (the Helioviewer link not for OVRO-LWA's)."""
         for button, _kind in self.transport_buttons:
             button.setEnabled(on)
+        for button in (self.save_btn, self.export_btn, self.use_btn):
+            button.setEnabled(on)
+        self.link_btn.setEnabled(on and not self.lwa_mode)
 
     def _cursor_set(self, when):
         self.time_chosen.emit(when)
@@ -2465,51 +2470,62 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         return self.diff_buttons + [self.reframe_btn, self.full_field_link, self.link_btn, self.save_btn, self.use_btn, self.export_btn]
 
     @staticmethod
-    def _bar_widths(bar, buttons, labels, compact) -> tuple:
-        """The widths ``bar`` wants with every label in full and with the
-        short ones: its hint, plus or minus what the shortened labels and the
-        hidden words give up."""
-        hint = bar.sizeHint().width()
+    def _saving(bar, button):
+        """What ``button``'s short label gives up of ``bar``'s width."""
+        pair = button.property("labels")
+        if not pair or not button.isVisibleTo(bar):
+            return 0
         metrics = bar.fontMetrics()
-        saved = 0
-        for button in buttons:
-            pair = button.property("labels")
-            if pair and button.isVisibleTo(bar):
-                saved += max(0, metrics.horizontalAdvance(pair[0]) - metrics.horizontalAdvance(pair[1]))
-        for label in labels:
-            saved += label.sizeHint().width() + SPACE_S
+        return max(0, metrics.horizontalAdvance(pair[0]) - metrics.horizontalAdvance(pair[1]))
+
+    @classmethod
+    def _bar_widths(cls, bar, buttons, compact) -> tuple:
+        """The widths ``bar`` wants with every label in full and with the
+        short ones: its hint, plus or minus what the shortened labels give up."""
+        hint = bar.sizeHint().width()
+        saved = sum(cls._saving(bar, button) for button in buttons)
         return (hint + saved, hint) if compact else (hint, hint - saved)
+
+    def _footer_short(self, level):
+        """The footer's buttons with short labels at ``level``: 0 none, 1 only
+        the longest label (the link's), 2 all."""
+        return ([], [self.link_btn], self._footer_buttons())[level]
+
+    def _footer_width(self, level):
+        """The width the footer wants at ``level`` (_footer_short)."""
+        now = sum(self._saving(self.footer, b) for b in self._footer_short(self._footer_compact))
+        then = sum(self._saving(self.footer, b) for b in self._footer_short(level))
+        return self.footer.sizeHint().width() + now - then
 
     def _fit_labels(self):
         """Each bar shortens its labels when its full ones would not fit the
         window, so nothing is ever cut off: the footer first (it is the
-        wider), then the header too; under ``NARROW_WIDTH`` the band also
-        drops its flare lane. The bars do not size the window (they would
-        hold it at their full labels); the window itself stops where the
-        short ones end."""
+        wider; its longest label alone first, then all), then the header
+        too; under ``NARROW_WIDTH`` the band also drops its flare lane. The
+        bars do not size the window (they would hold it at their full
+        labels); the window itself stops where the short ones end."""
         width = self.width()
         # The header's short width is taken before its labels change: its
         # segments sit in frames of their own, and the row only learns their
         # new widths with the next layout pass
-        header_full, header_short = self._bar_widths(self.header, self.span_buttons + self.step_buttons, [self.span_label, self.step_label], self._compact)
-        footer_full = self._bar_widths(self.footer, self._footer_buttons(), [self.fps_label], self._footer_compact)[0]
-        self._set_compact(header_full > width or width < NARROW_WIDTH, footer_full > width)
-        footer_short = self._bar_widths(self.footer, self._footer_buttons(), [self.fps_label], self._footer_compact)[1]
-        self.setMinimumWidth(max(header_short, footer_short, 0))
+        header_full, header_short = self._bar_widths(self.header, self.span_buttons + self.step_buttons, self._compact)
+        footer = next((level for level in (0, 1) if self._footer_width(level) <= width), 2)
+        self._set_compact(header_full > width or width < NARROW_WIDTH, footer)
+        self.setMinimumWidth(max(header_short, self._footer_width(2), 0))
         self.band.set_compact(width < NARROW_WIDTH)
 
     def _set_compact(self, compact, footer=None):
-        footer = compact if footer is None else (footer or compact)
+        """Short header labels when ``compact``; the footer's at ``footer``'s
+        level (_footer_short), all short with the header's."""
+        footer = 2 if compact else (footer or 0)
         if compact == self._compact and footer == self._footer_compact:
             return
         self._compact, self._footer_compact = compact, footer
         for button in self.span_buttons + self.step_buttons:
             self._label(button, compact)
+        short = self._footer_short(footer)
         for button in self._footer_buttons():
-            self._label(button, footer)
-        self.span_label.setVisible(not compact)
-        self.step_label.setVisible(not compact)
-        self.fps_label.setVisible(not footer)
+            self._label(button, button in short)
 
     @staticmethod
     def _label(button, short):

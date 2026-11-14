@@ -56,8 +56,8 @@ class PreferencesDialog(QDialog):
 
         # Description label
         desc_label = QLabel(
-            "Adjust the UI scale factor for high-DPI displays.\n"
-            "Default is 1.0 (100%). Increase for larger UI elements.\n"
+            "Adjust the UI scale factor for high-DPI displays. "
+            "Default is 1.0 (100%). Increase for larger UI elements. "
             f"The smallest this display can show is {self.lowest_scale:.2f}x."
         )
         desc_label.setObjectName("Hint")
@@ -142,6 +142,19 @@ class PreferencesDialog(QDialog):
         # Button box
         box, _ = button_bar(primary=("OK", self._save_and_close), secondary=("Cancel", self.reject))
         layout.addWidget(box)
+
+    def showEvent(self, event):
+        """As tall as its wrapped hints need at the width it opens at, and
+        never shorter (the size Qt picks goes by the width a hint would
+        like, and the hints were then cut)."""
+        for label in self.findChildren(QLabel):
+            label.ensurePolished()  # (in the stylesheet's font, not the one it was made with)
+        layout = self.layout()
+        layout.activate()
+        height = layout.totalHeightForWidth(self.width())
+        self.setMinimumHeight(layout.totalHeightForWidth(self.minimumWidth()))
+        self.resize(self.width(), max(height, self.height()))
+        super().showEvent(event)
 
     def _updates_group(self):
         """Whether SolarViewer looks for a newer version when it starts."""

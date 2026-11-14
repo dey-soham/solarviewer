@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 )
 from ...ui.activity import ActivityLabel
 from ...ui.open_image import choose_image
-from ...ui.widgets import segmented
+from ...ui.widgets import PathEdit, segmented
 from .helpers import hint
 
 
@@ -103,7 +103,7 @@ class InputTabMixin:
 
         # 1. Directory field
         input_group_layout.addWidget(hint("Folder"), 0, 0)
-        self.input_directory_edit = QLineEdit()
+        self.input_directory_edit = PathEdit()
         input_group_layout.addWidget(self.input_directory_edit, 0, 1)
 
         browse_dir_btn = QPushButton("Browse…")
@@ -142,7 +142,7 @@ class InputTabMixin:
         single_layout = QHBoxLayout(self.single_image_group)
         single_layout.setContentsMargins(12, 4, 12, 4)
         single_layout.setSpacing(8)
-        self.single_image_edit = QLineEdit()
+        self.single_image_edit = PathEdit()
         self.single_image_edit.setPlaceholderText("FITS or CASA image shown in every frame")
         single_layout.addWidget(self.single_image_edit, 1)
         single_browse = QPushButton("Browse…")
@@ -156,9 +156,10 @@ class InputTabMixin:
             self.single_image_group.setVisible(not series)
             self.files_found_label.setVisible(series)
 
-        # Files found status (separate from the group) - use theme-compatible styling
+        # Files found: a line of muted text under the group (a framed status
+        # line would read as one more field)
         self.files_found_label = ActivityLabel("No files found yet")
-        self.files_found_label.label.setObjectName("StatusLabel")
+        self.files_found_label.label.setObjectName("SecondaryText")
         input_layout.addWidget(self.files_found_label)
         input_layout.addStretch()
 

@@ -444,10 +444,16 @@ class RadioDataDownloaderGUI(QDialog):
         block.setSpacing(SPACE_S)
         self.processing_kicker = kicker("Processing")
         block.addWidget(self.processing_kicker)
-        self.processing_row = QFrame()
-        self.processing_row.setObjectName("Surface")
+        # One card: the switch's row and, under it, its options (alone when
+        # there is no switch)
+        card = QFrame()
+        card.setObjectName("Surface")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        card_layout.setSpacing(SPACE_S)
+        self.processing_row = QWidget()
         row = QHBoxLayout(self.processing_row)
-        row.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SPACE_S)
         self.process_switch = _switch(True)
         self.process_switch.toggled.connect(self.on_processing_changed)
@@ -459,6 +465,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.processing_desc = _label("", "Meta")
         self.processing_desc.setWordWrap(True)
         self.processing_desc.setMinimumHeight(2 * self.processing_desc.fontMetrics().lineSpacing())
+        self.processing_desc.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # (one line or two, under the title)
         text.addWidget(self.processing_title)
         text.addWidget(self.processing_desc)
         row.addLayout(text, 1)
@@ -466,10 +473,11 @@ class RadioDataDownloaderGUI(QDialog):
         self.options_link.setLayoutDirection(Qt.RightToLeft)  # the chevron after the word
         self.options_link.setIconSize(QSize(10, 10))
         row.addWidget(self.options_link, 0, Qt.AlignTop)
-        block.addWidget(self.processing_row)
+        card_layout.addWidget(self.processing_row)
+        block.addWidget(card)
         self.options_row = QWidget()
         options = QGridLayout(self.options_row)
-        options.setContentsMargins(SPACE_M, 0, SPACE_M, 0)
+        options.setContentsMargins(0, 0, 0, 0)  # (under the title when there is a switch: on_source_changed)
         options.setHorizontalSpacing(SPACE_M)
         options.setVerticalSpacing(SPACE_S)
         self.flag_channels_box = QCheckBox("Flag bad channels")
@@ -497,7 +505,7 @@ class RadioDataDownloaderGUI(QDialog):
         options.setColumnStretch(2, 1)
         self._options_grid = options
         self.options_row.hide()
-        block.addWidget(self.options_row)
+        card_layout.addWidget(self.options_row)
         layout.addWidget(self.processing_block)
         layout.addStretch(1)  # (all the room left over: the blocks keep their spacing whatever a source shows)
         return self.form
@@ -786,6 +794,8 @@ class RadioDataDownloaderGUI(QDialog):
             self.option_boxes[key].show()
         self.processing_block.setVisible(source.switch is not None or bool(source.options))
         self.processing_row.setVisible(source.switch is not None)
+        under_title = self.process_switch.sizeHint().width() + SPACE_S if source.switch is not None else 0
+        self._options_grid.setContentsMargins(under_title, 0, 0, 0)
         self.processing_kicker.setText("PROCESSING" if source.switch is not None else "FILES")
         self.options_row.setVisible(bool(source.options) and (self._options_open or source.switch is None))
         self.on_processing_changed(self.process_switch.isChecked())
@@ -1110,7 +1120,7 @@ class RadioDataDownloaderGUI(QDialog):
             self.size_label.setText("Choose a day or a window that ends after it starts")
             set_tone(self.size_label, "error")
         elif failed:
-            self._say_count("Unknown", "Hint")
+            self._say_count("Unknown")  # (as large as a count: the block keeps its shape)
             self.size_label.setText("The archive could not be reached; it is asked again when the form changes")
             set_tone(self.size_label, "error")
         elif est["files"] is None:
@@ -1163,7 +1173,8 @@ class RadioDataDownloaderGUI(QDialog):
         if source.observing_day and not bad_window and not self.whole_day():
             night = source.night(station, start, end)
             if night:
-                note = f"{_escape(night)} <a href='day' style='color:{link}'>Use its observing day</a>"
+                # (the link on one line: a wrap would leave its last word alone)
+                note = f"{_escape(night)} <a href='day' style='color:{link}'>Use&nbsp;its&nbsp;observing&nbsp;day</a>"
         self.note_label.setText(note)
         self.note_label.setVisible(bool(note))
 

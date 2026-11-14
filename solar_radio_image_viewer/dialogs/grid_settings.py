@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
 
 from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
+from .beam_settings import OVERLAY_LONGEST
 from .form import color_combo, field_label, form_block
 
 
@@ -22,7 +23,7 @@ class GridSettingsDialog(QDialog):
 
     def setup_ui(self):
         layout = dialog_layout(self)
-        style_layout = form_block(layout)
+        style_layout = form_block(layout, longest=OVERLAY_LONGEST)
 
         # Color selection
         colors = [

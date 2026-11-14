@@ -331,7 +331,7 @@ class FramePlanner(QObject):
                 "The input folder does not exist. Choose one on the Input tab.",
             )
         if not spec.pattern.strip():
-            return [], ("No pattern", "Enter a file pattern, e.g. *.fits or *.image")
+            return [], ("No pattern", "Enter a file pattern, for example *.fits or *.image")
         input_path = os.path.join(spec.folder, spec.pattern)
         files = glob.glob(os.path.join(glob.escape(spec.folder), spec.pattern))
         if not files:
@@ -364,7 +364,7 @@ class FramePlanner(QObject):
         if not folder:
             return [], ("No folder", "Choose the folder of the images on the server.")
         if not pattern:
-            return [], ("No pattern", "Enter a file pattern, e.g. *.fits or *.image")
+            return [], ("No pattern", "Enter a file pattern, for example *.fits or *.image")
         files, error = self._server_list(job, folder, pattern)
         if error:
             return [], ("Could not read the folder", error)

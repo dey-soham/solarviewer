@@ -151,10 +151,25 @@ def mono_font(points):
     return font
 
 
-def breakable(text):
-    """``text`` with places a wrapped label may break it: after each /, _,
-    - and . (a file name or path has no spaces to break at)."""
-    return re.sub(r"([/_.\-])", "\\1\u200b", text)
+def breakable(text, at="/_.-"):
+    """``text`` with places a wrapped label may break it: after each of the
+    characters ``at`` (a file name or path has no spaces to break at; a
+    path breaks only between its folders, "/" and "\\")."""
+    return re.sub("([" + re.escape(at) + "])", "\\1\u200b", text)
+
+
+def elide_name(text, metrics, room):
+    """``text`` (a file name) cut short to ``room`` pixels with "…" near its
+    start: names in one folder often share both ends ("SUN_TIME_…_FREQ_
+    110.74MHz.fits") and differ in the middle, which an even middle cut
+    hides; this keeps the start, then as much of the end as fits."""
+    if metrics.horizontalAdvance(text) <= room:
+        return text
+    head = metrics.elidedText(text, Qt.ElideRight, room // 4)
+    if not head.endswith("…"):  # (too narrow for any head)
+        head = "…"
+    tail = metrics.elidedText(text, Qt.ElideLeft, room - metrics.horizontalAdvance(head[:-1]))
+    return head[:-1] + tail
 
 
 # ------------------------------------------------------ what entries are ----
@@ -1582,7 +1597,7 @@ class FileListDelegate(QStyledItemDelegate):
             font = body if folder else mono
             painter.setFont(font)
             painter.setPen(QColor(palette["text"] if selected else palette["text_strong"]))
-            shown = QFontMetrics(font).elidedText(text, Qt.ElideMiddle, rect.width())
+            shown = elide_name(text, QFontMetrics(font), rect.width())
             painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, shown)
         elif column == TYPE:
             painter.setFont(body)
@@ -1885,7 +1900,7 @@ class DetailsPanel(QFrame):
             self.cache_text.setText("Cached" if cached else "Not cached")
         separator = "\\" if "\\" in folder and "/" not in folder else "/"
         shown = folder if folder.endswith(separator) else folder + separator
-        self.path_value.setText(breakable(shown))
+        self.path_value.setText(breakable(shown, at=separator))
         self.path_value.setToolTip(shown)
 
     def show_header(self, state, rows=(), error=""):

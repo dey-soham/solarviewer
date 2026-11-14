@@ -12,6 +12,27 @@
 *   **Zoom Kept**: The part of the sky in view stays in view when stepping to the next image ([ and ]), changing the unit, and switching between RA/Dec and Solar XY.
 *   **Regions and Annotations on the Sky**: Regions and annotations keep their place on the sky across the RA/Dec and Solar XY switch.
 
+### Annotations
+*   **Annotate Tool** (A): Text, arrows, rectangles and ellipses are now put on the image with the mouse. Click where a text goes and type it there; drag to draw an arrow or a shape. A strip at the image's corner chooses what is drawn and its colour.
+*   **Editable**: Click an annotation to select it, drag it to move it, and drag its handles to resize or turn it. Double-click a text to type it again. Delete removes the selected one, and a right-click offers Properties, Duplicate and Delete.
+*   **Properties**: Colour, line, size, fill and font are set in one window that follows the selection and shows every change at once. The next annotation takes the look of the last.
+*   **Undo and Redo**: Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y), for every change to the annotations.
+*   **Solar Radius Circles**: 1 to 10 R☉, in the tool's menu and under Image → Annotate; they can be moved and resized like any other shape.
+*   The dialogs that asked for an annotation's pixel coordinates are gone.
+
+### Look and Layout
+*   **Small Windows**: The bar under the image keeps every button whole at the window's smallest size: its groups stand closer, then the buttons a key also does give way. The dialogs, the log viewer, the calibration table visualizer and the Connect dialog have a smallest size at which everything still shows.
+*   **Long Paths and Names**: A path field shows a long path as "/home/…/day/image.fits", the name whole and the full path in its tooltip, instead of its tail cut off. Long names in lists and labels are shortened with "…".
+*   **Units as Written**: "Jy/beam" on the colorbar, by the intensity range and in videos, for a file's "JY/BEAM".
+*   **Compare**: Panes are named by what differs between them (the time, for a series). A copy made for another unit or frame keeps the image's name in its tab.
+*   **Tables and Forms**: Column titles start where their cells' text does; the fields of a dialog start in one column across its groups (Plot style, Contours, Create video, RFI settings). The text of a locked form dims with it.
+*   **Gaussian Fit**: The result is a table with units (position, size, position angle, flux, and the size deconvolved from the beam) with a Copy button.
+*   **Keyboard Shortcuts** (F1): Keys are drawn as keycaps.
+*   **Dynamic Spectrum Viewer**: The colourbar shows its values; **Original vs cleaned** has the view's time and frequency axes; a masked area is no longer a white box in the light theme; Auto-flag says how to flag less when it flags most of a page.
+*   **Create Dynamic Spectra**: Short hints, with the detail in the tooltips; everything shows at the window's smallest size.
+*   **Helioviewer**: Buttons keep their names at every width; the axis labels read in the light theme; Save frame, Export and Use in viewer wait for frames.
+*   **Wording**: One name for one thing ("Region", "Calibration table visualizer"), and messages that name only buttons that exist.
+
 ### Opening Images
 *   **One Open Item**: File → Open Image (Ctrl+O) opens FITS files and CASA images alike, as do the contour, video and phase-shift dialogs.
 *   **Open Recent**: File → Open Recent lists the last ten images; the Open dialog starts in the last image's folder.

@@ -677,7 +677,7 @@ class NOAAEventsViewer(
                 "Half angle",
                 "Earth-directed",
                 "Width",
-                "Class",
+                "Speed class",  # (slow, moderate, fast: not a flare's class)
                 "Note",
             ],
             empty_text="Fetch a date to see the CMEs around it",

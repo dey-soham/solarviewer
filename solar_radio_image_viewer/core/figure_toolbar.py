@@ -5,14 +5,16 @@ file navigation in the middle, the zoom group at the right.
 
 import logging
 from PyQt5.QtWidgets import (
+    QAbstractButton,
     QAction,
     QActionGroup,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QToolButton,
 )
-from PyQt5.QtCore import QPointF, QSize, Qt
+from PyQt5.QtCore import QEvent, QPointF, QSize, Qt
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from ..ui.icons import get_resource_path, launcher_icon, themed_icon
 from ..ui.styles import SPACE_S, themed
@@ -20,6 +22,7 @@ from ..ui.widgets import segmented
 from ..tools import (
     RegionMode,
 )
+from ..tools.annotation_ui import tool_icon
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,107 @@ def _nav_icon(marks, palette):
     return icon
 
 
+def _least_width(layout):
+    """(the least width ``layout`` needs, whether it holds anything shown):
+    worked out from its widgets as they are now. Qt's own answer is kept
+    from before a style change until the event loop has turned."""
+    margins = layout.contentsMargins()
+    total, shown = margins.left() + margins.right(), 0
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget, inner = item.widget(), item.layout()
+        if widget is not None:
+            if widget.isHidden():
+                continue
+            if widget.layout() is not None:
+                own = widget.contentsMargins()  # (its border)
+                width = _least_width(widget.layout())[0] + own.left() + own.right()
+            else:
+                width = widget.minimumSizeHint().width()
+            width = min(max(width, widget.minimumWidth()), widget.maximumWidth())
+        elif inner is not None:
+            width, any_shown = _least_width(inner)
+            if not any_shown:
+                continue
+        else:
+            continue  # (a stretch)
+        total += width
+        shown += 1
+    return total + max(0, shown - 1) * max(0, layout.spacing()), shown > 0
+
+
+class _CanvasBar(QFrame):
+    """The bar under the image. Too narrow for all it holds (a small
+    window, a compare page's controls beside the rest), it gives way in
+    steps rather than squeeze its buttons to slivers: first the grouped
+    buttons stand closer (the ``tight`` look), then the ``optional``
+    widgets go, a group at a time: those with a key, or a neighbour, that
+    does the same. Wider again, they come back."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("CanvasBar")
+        self.optional = []  # groups of widgets, the first to go first
+        self._step = 0
+        self._needs = {}  # step -> the width the bar needs at it, where known
+        self._fitting = False
+
+    def _need(self):
+        return _least_width(self.layout())[0]
+
+    def _set_step(self, step):
+        tight = step >= 1
+        if bool(self.property("tight")) != tight:
+            self.setProperty("tight", tight)
+            for button in self.findChildren(QAbstractButton):
+                self.style().unpolish(button)
+                self.style().polish(button)
+                # (a button keeps the size it worked out until it is told
+                # its style changed)
+                QApplication.sendEvent(button, QEvent(QEvent.StyleChange))
+                button.updateGeometry()
+        for index, group in enumerate(self.optional):
+            for widget in group:
+                widget.setVisible(step < index + 2)
+        self._step = step
+        self._needs[step] = self._need()
+
+    def fit(self):
+        if self._fitting or self.layout() is None:
+            return
+        self._fitting = True
+        try:
+            need = self._need()
+            if self._needs.get(self._step) != need:
+                # What it holds changed: what the other steps need is not known
+                self._needs = {self._step: need}
+            last = len(self.optional) + 1
+            while self._needs[self._step] > self.width() and self._step < last:
+                self._set_step(self._step + 1)
+            # Back a step when that is known to fit, or not known (then it is tried)
+            while self._step > 0 and self._needs.get(self._step - 1, 0) <= self.width():
+                self._set_step(self._step - 1)
+                if self._needs[self._step] > self.width():
+                    self._set_step(self._step + 1)
+                    break
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fit()
+
+    def event(self, event):
+        done = super().event(event)
+        if event.type() == QEvent.LayoutRequest:
+            self.fit()
+        return done
+
+
 class FigureToolbarMixin:
     """Builds the bar under the image.
 
@@ -63,7 +167,7 @@ class FigureToolbarMixin:
 
     ``_on_first_file``, ``_on_last_file``,
     ``_on_next_file``, ``_on_prev_file``, ``_show_filter_dialog``,
-    ``_show_playlist_dialog``, ``_toggle_profile_mode``,
+    ``_show_playlist_dialog``, ``_toggle_annotate_mode``, ``_toggle_profile_mode``,
     ``_toggle_ruler_mode``, ``reset_view``, ``set_region_mode``,
     ``zoom_60arcmin``, ``zoom_in``, ``zoom_out``
     """
@@ -100,14 +204,14 @@ class FigureToolbarMixin:
     def setup_figure_toolbar(self):
         """The bar under the image: tools, zoom, file navigation. Returns
         the widget."""
-        bar = QFrame()
-        bar.setObjectName("CanvasBar")
+        bar = _CanvasBar()
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(SPACE_S)
         action_group = QActionGroup(self)
 
-        # The tools: pan (the default), regions, the ruler and the profile
+        # The tools: pan (the default), regions, the ruler, the profile and
+        # the annotations
         self.pan_action = self._tool_action(
             get_resource_path("assets/pan.png"),
             "Pan (H): drag, or middle-drag in any mode. Scroll to zoom, arrows to move",
@@ -139,12 +243,20 @@ class FigureToolbarMixin:
             checkable=True,
         )
         self.profile_action.toggled.connect(self._toggle_profile_mode)
+        self.annotate_action = self._tool_action(
+            QIcon(),
+            "Annotate (A): put text, arrows and shapes on the image, and change them",
+            checkable=True,
+        )
+        self.annotate_action.toggled.connect(self._toggle_annotate_mode)
+        themed(bar, lambda palette: self.annotate_action.setIcon(tool_icon("annotate", palette)))
         tools = [
             self.pan_action,
             self.rect_action,
             self.ellipse_action,
             self.ruler_action,
             self.profile_action,
+            self.annotate_action,
         ]
         for action in tools:
             action_group.addAction(action)
@@ -182,7 +294,7 @@ class FigureToolbarMixin:
         )
         self._filter_btn = self._nav_button("Set file filter pattern", self._show_filter_dialog)
         self._filter_btn.setIcon(QIcon(themed_icon("filter.svg")))
-        self._playlist_btn = self._nav_button("Show all files in directory", self._show_playlist_dialog)
+        self._playlist_btn = self._nav_button("File list: all the files in this directory", self._show_playlist_dialog)
         themed(
             self._playlist_btn,
             lambda _palette: self._playlist_btn.setIcon(launcher_icon("fd_list.svg", NAV_ICON)),
@@ -234,6 +346,11 @@ class FigureToolbarMixin:
             self._tool_button(self.zoom_60arcmin_action),
         ]
         layout.addWidget(segmented(zoom_buttons))
+        # What goes first in a narrow window: the keys { } and 1 do the same
+        bar.optional = [
+            [self._first_file_btn, self._last_file_btn],
+            [zoom_buttons[-1], self.zoom_label],
+        ]
         # Room at the right end for the page's layout controls
         self.page_controls_slot = QHBoxLayout()
         self.page_controls_slot.setContentsMargins(0, 0, 0, 0)

@@ -15,6 +15,8 @@ import math
 
 import numpy as np
 
+from ..processing.stokes import unit_name
+
 logger = logging.getLogger(__name__)
 
 MAX_CURVES = 4
@@ -135,14 +137,14 @@ def sum_scale(header, wcs=None):
                 return 1.0 / beam_pixels, "Jy"
         except Exception:
             pass
-    return 1.0, f"{unit} × pixels" if unit else ""
+    return 1.0, f"{unit_name(unit)} × pixels" if unit else ""
 
 
 def curve_unit(quantity, header, wcs=None):
     """Unit of ``quantity`` of an image with ``header``."""
     if quantity == "sum":
         return sum_scale(header, wcs)[1]
-    return str((header or {}).get("BUNIT", "") or "").strip()
+    return unit_name((header or {}).get("BUNIT", ""))
 
 
 def curve_label(curve, layer_names):

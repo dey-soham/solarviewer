@@ -54,6 +54,7 @@ from .ui.helpers import (
     SIZE_PRESETS,
     _format_duration,
     is_image,
+    line_up_forms,
     viewer_image,
 )
 from .ui.planner import FramePlanner
@@ -326,6 +327,8 @@ class VideoCreationDialog(
         self.tab_widget.addTab(region_scroll, "Region")
         self.tab_widget.addTab(overlay_scroll, "Overlays")
         self.tab_widget.addTab(output_scroll, "Output")
+        for index in range(self.tab_widget.count()):  # (a tab's groups, one label column)
+            line_up_forms(self.tab_widget.widget(index))
 
         # All seven tabs fit the pane: shrunk and elided rather than scrolled
         self.tab_widget.setUsesScrollButtons(False)

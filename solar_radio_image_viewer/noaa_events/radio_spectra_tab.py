@@ -73,6 +73,7 @@ from ..ui.styles import (
     theme_manager,
     themed,
 )
+from ..ui import widgets as shared
 from ..ui.widgets import button_bar, dialog_layout, empty_note, kicker, link_button, segmented
 
 from .cache import _noaa_cache, keep
@@ -149,7 +150,7 @@ UNREAD_TIP = (
     "A plot joins the stack only once its time axis has been proved, and these stay as the archive drew them: "
     "click to open. OVRO-LWA's also needs the time table of its FITS, which can come days after the plot."
 )
-NOT_FETCHED = "Not fetched. Press Fetch to load it"
+NOT_FETCHED = "Not fetched"  # (on every lane and strip not fetched: the Fetch button is over them)
 SPECTRA_EMPTY = "Press Fetch to load the day's spectra"
 LANE_TIP = "Click to set the cursor, drag to zoom, double-click or press Enter to open large"
 NO_DATA = "The archive's plots show no data for this date"
@@ -1218,9 +1219,8 @@ class RadioSpectraTabMixin:
 
         top = QHBoxLayout()
         top.setSpacing(SPACE_S)
-        self.spectra_status_label = QLabel()
-        self.spectra_status_label.setObjectName("Hint")
-        self.spectra_status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # never widens the window
+        # (never widens the window: shortened with "…" when the row is narrow)
+        self.spectra_status_label = shared.ElidedLabel(role="Hint", mode=Qt.ElideRight)
         top.addWidget(self.spectra_status_label, 1)
         self.aligned_btn = QPushButton("Aligned")
         self.originals_btn = QPushButton("Originals")
@@ -1449,7 +1449,7 @@ class RadioSpectraTabMixin:
                 parts.append(f"cursor {axis.cursor_text()}")
             parts.append("high frequency at the top of each lane")
             text = " · ".join(parts)
-        self.spectra_status_label.setText(text)
+        self.spectra_status_label.setFullText(text)
 
     def clear_dh_spectra_ui(self, keep_viewer=False):
         """Back to no spectra at all."""

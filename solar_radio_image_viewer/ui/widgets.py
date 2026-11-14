@@ -12,18 +12,26 @@ Pieces every window is built from, so they all read the same way.
 - ``toggle_row``: a switch with its name and settings button on a surface
 - ``vrule``: a short vertical line between groups in a bar
 - ``empty_note``: what an area without content says, in the middle of it
+- ``ElidedLabel``: a label that shortens its text with "…" to fit, never cut
+- ``PathEdit``: a line edit for a path, which shows a long one whole at both
+  ends ("/home/…/image.fits") while it is not being typed in
 - ``StatusDotButton``: a status bar button led by a green or red dot
 """
 
-from PyQt5.QtCore import QEvent, QObject, QPointF, Qt
-from PyQt5.QtGui import QColor, QFont, QPainter
+from PyQt5.QtCore import QEvent, QObject, QPointF, QSize, Qt
+from PyQt5.QtGui import QColor, QFont, QPainter, QPalette
 from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionFrame,
+    QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -206,6 +214,141 @@ def empty_note(text, parent=None):
     label.setAlignment(Qt.AlignCenter)
     label.setWordWrap(True)
     return label
+
+
+def elided_path(metrics, path, width):
+    """``path`` as it fits in ``width``: the name at its end whole, and of
+    the folders before it as many of the last as fit, whole, with the first
+    where it fits too ("/home/…/day/image.fits", "…/day/image.fits"); the
+    end of the name alone when even the name is too long."""
+    if metrics.horizontalAdvance(path) <= width:
+        return path
+    folders, slash, name = path.rstrip("/").rpartition("/")
+    room = width - metrics.horizontalAdvance(slash + name)
+    if not slash or room < metrics.horizontalAdvance("…"):
+        return metrics.elidedText(name or path, Qt.ElideLeft, width)
+    parts = folders.split("/")
+    lead = parts[: 2 if parts[0] == "" else 1]  # ("/home", "~", "data")
+    for kept in range(len(parts) - 1, -1, -1):  # (the folders nearest the name tell the most)
+        for start in (lead, []):
+            if len(start) + kept >= len(parts) or not (start or kept):
+                continue  # (the "…" stands for a folder at least)
+            shown = "/".join(start + ["…"] + parts[len(parts) - kept:])
+            if metrics.horizontalAdvance(shown) <= room:
+                return shown + slash + name
+    return "…" + slash + name
+
+
+class ElidedLabel(QLabel):
+    """A label of one line that gives way to its neighbours: text too long
+    for it is shortened with "…" (in the ``mode``'s place: the middle keeps
+    both ends of a name; "path" keeps a path's file name whole, as
+    ``elided_path`` does) and is whole in its tooltip. Set the text with
+    ``setFullText``. ``least`` is the characters it always has room for."""
+
+    def __init__(self, text="", role=None, mode=Qt.ElideMiddle, least=4, parent=None):
+        super().__init__(parent)
+        if role:
+            self.setObjectName(role)
+        self._full = ""
+        self._mode = mode
+        self._least = least
+        self._own_tip = True  # (until a tooltip of its own is set)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setFullText(text)
+
+    def fullText(self):
+        return self._full
+
+    def setFullText(self, text):
+        self._full = str(text)
+        self.updateGeometry()
+        self._elide()
+
+    def setToolTip(self, text):
+        """A tooltip of its own, in place of the whole text; an empty one
+        gives the whole text's back."""
+        self._own_tip = not text
+        if text:
+            super().setToolTip(text)
+        else:
+            self._elide()
+
+    def sizeHint(self):
+        metrics = self.fontMetrics()
+        return QSize(metrics.horizontalAdvance(self._full) + 4, metrics.height())
+
+    def minimumSizeHint(self):
+        metrics = self.fontMetrics()
+        return QSize(metrics.horizontalAdvance("M") * self._least, metrics.height())
+
+    def resizeEvent(self, event):
+        self._elide()
+        super().resizeEvent(event)
+
+    def _elide(self):
+        room = max(0, self.width() - 2)
+        if self._mode == "path":
+            shown = elided_path(self.fontMetrics(), self._full, room)
+        else:
+            shown = self.fontMetrics().elidedText(self._full, self._mode, room)
+        self.setText(shown)
+        if self._own_tip:  # (the whole text, only while some of it is hidden)
+            super().setToolTip(self._full if shown != self._full else "")
+
+
+class PathEdit(QLineEdit):
+    """A line edit for the path of a file or folder. A path too long for it
+    is shown shortened while it is not being typed in, as ``elided_path``
+    does: the name at its end whole, "…" among the folders before it (a
+    plain line edit shows the end, cut in mid-letter); its tooltip is then
+    the whole path."""
+
+    def _shortened(self):
+        """(the text as it fits, where it goes), or None when the whole
+        text fits or is being typed."""
+        text = self.text()
+        if self.hasFocus() or not text:
+            return None
+        option = QStyleOptionFrame()
+        self.initStyleOption(option)
+        rect = self.style().subElementRect(QStyle.SE_LineEditContents, option, self)
+        margins = self.textMargins()
+        left, right = margins.left(), margins.right()
+        # The icons of its actions, as a line edit makes room for them:
+        # each its width and 4 px
+        for icon in self.findChildren(QToolButton):
+            if icon.isHidden():
+                continue
+            if icon.geometry().center().x() < self.width() / 2:
+                left += icon.width() + 4
+            else:
+                right += icon.width() + 4
+        # (2 px: the gap a line edit keeps beside its text)
+        rect.adjust(left + 2, margins.top(), -right - 2, -margins.bottom())
+        if self.fontMetrics().horizontalAdvance(text) <= rect.width():
+            return None
+        return elided_path(self.fontMetrics(), text, rect.width()), rect, option
+
+    def paintEvent(self, event):
+        shortened = self._shortened()
+        if shortened is None:
+            super().paintEvent(event)
+            return
+        text, rect, option = shortened
+        painter = QPainter(self)
+        self.style().drawPrimitive(QStyle.PE_PanelLineEdit, option, painter, self)
+        group = QPalette.Active if self.isEnabled() else QPalette.Disabled
+        painter.setPen(self.palette().color(group, QPalette.Text))
+        painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+        painter.end()
+
+    def event(self, event):
+        if event.type() == QEvent.ToolTip and self._shortened() is not None:
+            tip = self.toolTip()
+            QToolTip.showText(event.globalPos(), f"{self.text()}\n{tip}" if tip else self.text(), self)
+            return True
+        return super().event(event)
 
 
 class _UnitPlacer(QObject):

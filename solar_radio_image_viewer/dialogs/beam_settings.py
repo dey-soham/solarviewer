@@ -7,6 +7,10 @@ from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
 from .form import color_combo, field_label, form_block
 
+# The longest row name of the overlays' settings (beam, grid, solar disk),
+# so that their fields start at one place
+OVERLAY_LONGEST = "Edge colour"
+
 
 class BeamSettingsDialog(QDialog):
     """Dialog for configuring beam display settings."""
@@ -22,8 +26,9 @@ class BeamSettingsDialog(QDialog):
     def setup_ui(self):
         layout = dialog_layout(self)
 
-        # Color selection
-        color_layout = form_block(layout, "Colours")
+        # One block, as the other overlays' settings (four rows need no
+        # headings), its fields where theirs are
+        color_layout = style_layout = form_block(layout, longest=OVERLAY_LONGEST)
 
         # Edge color
         edge_label = field_label("Edge colour")
@@ -48,17 +53,14 @@ class BeamSettingsDialog(QDialog):
         color_layout.addWidget(face_label, 1, 0)
         color_layout.addWidget(self.face_combo, 1, 1)
 
-        # Style settings
-        style_layout = form_block(layout, "Style")
-
         # Line width
         linewidth_label = field_label("Edge width")
         self.linewidth_spinbox = QDoubleSpinBox()
         self.linewidth_spinbox.setRange(0.5, 5.0)
         self.linewidth_spinbox.setSingleStep(0.5)
         self.linewidth_spinbox.setValue(self.beam_style.get("linewidth", 1.5))
-        style_layout.addWidget(linewidth_label, 0, 0)
-        style_layout.addWidget(self.linewidth_spinbox, 0, 1)
+        style_layout.addWidget(linewidth_label, 2, 0)
+        style_layout.addWidget(self.linewidth_spinbox, 2, 1)
 
         # Opacity
         alpha_label = field_label("Opacity")
@@ -66,8 +68,8 @@ class BeamSettingsDialog(QDialog):
         self.alpha_spinbox.setRange(0.1, 1.0)
         self.alpha_spinbox.setSingleStep(0.1)
         self.alpha_spinbox.setValue(self.beam_style.get("alpha", 0.4))
-        style_layout.addWidget(alpha_label, 1, 0)
-        style_layout.addWidget(self.alpha_spinbox, 1, 1)
+        style_layout.addWidget(alpha_label, 3, 0)
+        style_layout.addWidget(self.alpha_spinbox, 3, 1)
         box, _ = button_bar(primary=("Apply", self.on_apply), secondary=("Close", self.close))
         layout.addWidget(box)
 

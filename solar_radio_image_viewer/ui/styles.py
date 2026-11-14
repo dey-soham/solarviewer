@@ -129,6 +129,8 @@ TOKENS = {
 #   TabRow          the row holding the image tabs on macOS (a line below)
 #   TopBar          the main window's control bar (a line below)
 #   CanvasBar       the toolbar under the image (a line above)
+#   CanvasTools     a QFrame of icon buttons lying over the image (the Annotate
+#                   tool's strip): on the surface colour, outlined
 #   Inspector       the main window's right column (a line on its left)
 #   InspectorHeader the row at its top, on the surface (a line below)
 #   Pinned          a QFrame pinned at the inspector's foot, on the surface
@@ -209,6 +211,7 @@ ROLES = (
     "TabRow",
     "TopBar",
     "CanvasBar",
+    "CanvasTools",
     "Inspector",
     "InspectorHeader",
     "Pinned",
@@ -326,9 +329,11 @@ DARK_PALETTE = {
     "status_on": "#6fbf8a",
     "status_off": "#de7d70",
     "secondary": "#a7a1db",
-    "switch_track": "#292b31",  # neutral-900
-    "switch_track_hover": "#3f424d",  # neutral-800
-    "switch_knob": "#595d6c",  # neutral-700
+    # A switch that is off: its track must show on a panel (neutral-900 on
+    # the surface colour left a knob with nothing round it)
+    "switch_track": "#3f424d",  # neutral-800
+    "switch_track_hover": "#595d6c",  # neutral-700
+    "switch_knob": "#b2b6ca",  # neutral-400 (assets/switch_off.svg)
     # The splash screen's own golden sun look
     "brand_gold": "#d4a535",
     "brand_orange": "#f5a623",
@@ -506,6 +511,14 @@ def get_stylesheet(palette, is_dark=True):
     QLabel:disabled {{
         color: {p['disabled']};
     }}
+    /* (a role's own colour would outrank the rule above: a form that is
+       locked dims all its text, not all but these) */
+    QLabel#Kicker:disabled, QLabel#SectionTitle:disabled, QLabel#SecondaryText:disabled,
+    QLabel#Meta:disabled, QLabel#Hint:disabled, QLabel#Headline:disabled, QLabel#Mono:disabled,
+    QLabel#DetailName:disabled, QLabel#DetailValue:disabled, QLabel#DetailMono:disabled,
+    QLabel#SwitchLabel:disabled, QLabel#StatusLabel:disabled, QFrame#Field QLabel:disabled {{
+        color: {p['disabled']};
+    }}
     QLabel#Kicker {{
         color: {p['highlight']};
         font-size: {FONT_META}pt;
@@ -644,6 +657,20 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {p['window']};
         border: none;
         border-top: 1px solid {p['divider']};
+    }}
+    /* Too narrow for its buttons, they stand closer (core/figure_toolbar.py) */
+    QFrame#CanvasBar[tight="true"] QFrame#Segmented QToolButton,
+    QFrame#CanvasBar[tight="true"] QFrame#Segmented QPushButton {{
+        padding: 2px 3px;
+    }}
+    QFrame#CanvasTools {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border_light']};
+        border-radius: {RADIUS_LG}px;
+    }}
+    QFrame#CanvasTools QToolButton::menu-indicator {{
+        image: none;
+        width: 0px;
     }}
     QFrame#Inspector {{
         background-color: {p['window']};
@@ -1251,6 +1278,10 @@ def get_stylesheet(palette, is_dark=True):
         color: {p['error']};
         border-color: {p['error']};
     }}
+    QPushButton[tone="error"]:disabled {{
+        color: {p['disabled']};
+        border-color: {p['divider']};
+    }}
     /* One order everywhere: other actions, Cancel, then the main action */
     QDialogButtonBox {{
         button-layout: 3;
@@ -1627,6 +1658,11 @@ def get_stylesheet(palette, is_dark=True):
         padding: {SPACE_XS + 2}px {SPACE_S}px;
         border: none;
         border-bottom: 1px solid {p['divider']};
+    }}
+    /* A column's title starts where its cells' text does (Qt gives a
+       cell's text a margin of its own on top of the padding) */
+    QHeaderView::section:horizontal {{
+        padding-left: {SPACE_S + 3}px;
     }}
     QHeaderView::section:vertical {{
         border-bottom: 1px solid {p['row_rule']};

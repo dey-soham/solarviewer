@@ -79,9 +79,12 @@ class LogConsole(QDialog):
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
         )
 
-        # Setup layout
+        # Room for a few lines and the buttons
+        self.setMinimumSize(480, 280)
+
+        # Setup layout: the text in the margins the buttons have
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, 0)
         layout.setSpacing(0)
 
         # Log display area
@@ -100,7 +103,7 @@ class LogConsole(QDialog):
         # Button bar
         btn_bar = QWidget()
         btn_layout = QHBoxLayout(btn_bar)
-        btn_layout.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
+        btn_layout.setContentsMargins(0, SPACE_M, 0, SPACE_M)
         btn_layout.setSpacing(SPACE_S)
 
         self.btn_clear = QPushButton("Clear")

@@ -206,6 +206,18 @@ def rms_in_box(plane, box):
     return np.sqrt(np.mean(region**2))
 
 
+# Units that some programs write in capitals (WSClean: "JY/BEAM"), as they
+# are written
+_UNIT_NAMES = {"JY/BEAM": "Jy/beam", "JY/PIXEL": "Jy/pixel", "JY": "Jy"}
+
+
+def unit_name(unit):
+    """``unit`` (a file's BUNIT) as it is written: "JY/BEAM" reads
+    "Jy/beam". A unit not known here is left as the file has it."""
+    unit = str(unit or "").strip()
+    return _UNIT_NAMES.get(unit.upper(), unit)
+
+
 def product_unit(stokes, unit):
     """The unit of the ``stokes`` product of an image in ``unit``: none for
     the ratios, degrees for the polarization angle, the image's otherwise."""
@@ -213,7 +225,7 @@ def product_unit(stokes, unit):
         return "deg"
     if uses_rms(stokes):
         return ""
-    return unit
+    return unit_name(unit)
 
 
 def uses_rms(stokes):

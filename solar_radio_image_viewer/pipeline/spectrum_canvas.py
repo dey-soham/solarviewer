@@ -400,6 +400,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     AXIS_WIDTH = 52  # of the frequency axis (the time bar lines up with it)
     AXIS_HEIGHT = 30  # of the time axis
+    COLORBAR_STRIP = 10  # the colorbar's own width, its plot's margins included
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -514,8 +515,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self.colorbar_plot.showAxis("right")
         self.colorbar_plot.getAxis("bottom").setHeight(self.AXIS_HEIGHT)
         self.colorbar_plot.getAxis("bottom").setStyle(showValues=False, tickLength=0)
-        self.colorbar_plot.getAxis("right").setWidth(44)
-        self.colorbar_plot.setFixedWidth(6 + 44)
+        self.colorbar_plot.getAxis("right").setWidth(44)  # (then as its values need)
+        self.colorbar_plot.setFixedWidth(self.COLORBAR_STRIP + 44)
         self.colorbar_vb = self.colorbar_plot.vb
         self.colorbar_vb.setMouseEnabled(x=False, y=False)
         self.colorbar_vb.setXRange(0, 1, padding=0)
@@ -672,6 +673,16 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 ticks.append((float(self._apply_scaling(v)) * 255.0, f"{v:.3g}"))
 
             self.colorbar_axis.setTicks([ticks])
+            # As wide as its longest value ("4.18e+10"): pyqtgraph hides a
+            # tick value that runs past the axis rather than cut it
+            from PyQt5.QtGui import QFontMetrics
+
+            metrics = QFontMetrics(tick_font())
+            widest = max(metrics.horizontalAdvance(text) for _, text in ticks)
+            width = self.colorbar_axis.style["tickTextOffset"][0] + widest + 4
+            if width != self.colorbar_axis.width():
+                self.colorbar_axis.setWidth(width)
+                self.colorbar_plot.setFixedWidth(self.COLORBAR_STRIP + width)
 
             # Set the colorbar rect and range in NORMALIZED [0, 255] space
             # This prevents overflow in ViewBox if vmin/vmax are very large
@@ -1700,6 +1711,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         """Show nothing (no file open)."""
         self.image_item.clear()
         self._data = None
+        self.plot_item.vb.setBackgroundColor(None)
         self._filename = None
         self.set_boxes([])
         self.set_selected_box(None)
@@ -1757,6 +1769,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
         # dark theme's colours over a dark image, the light theme's over
         # a light one, whatever the theme)
         over = get_palette("light" if self._image_is_light else "dark")
+        # Masked and flagged pixels (NaN, not drawn) show the plot's ground:
+        # a surface of the image's own lightness, so that on a dark image
+        # they are dark in the light theme too, never a white box
+        self.plot_item.vb.setBackgroundColor(over["surface"] if self._data is not None else None)
         ink, ground = over["text"], over["plot_bg"]
         line = QColor(ink)
         line.setAlphaF(0.55)

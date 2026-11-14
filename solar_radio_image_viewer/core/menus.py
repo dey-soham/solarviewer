@@ -29,7 +29,7 @@ class MenusMixin:
     ``handle_add_tab``, ``launch_data_downloader_gui``,
     ``launch_radio_data_downloader_gui``, ``open_helioviewer_browser``,
     ``save_sub_image``, ``save_tb_map_as_fits``, ``show_about_dialog``,
-    ``show_add_arrow_annotation_dialog``, ``show_add_text_annotation_dialog``,
+    ``setup_annotate_menu``,
     ``show_cache_manager``, ``show_coordinate_transformation_dialog``,
     ``show_create_video_dialog``, ``show_format_conversion_dialog``,
     ``show_keyboard_shortcuts``, ``show_log_console``, ``show_metadata``,
@@ -155,15 +155,8 @@ class MenusMixin:
         presets.addSeparator()
         self._add_preset_actions(presets)
 
-        annotate = menu.addMenu("Annotate")
-        self._action(annotate, "Add text…", self.show_add_text_annotation_dialog,
-                     "Add a text annotation to the image", "Ctrl+T")
-        self._action(annotate, "Add arrow…", self.show_add_arrow_annotation_dialog,
-                     "Add an arrow annotation to the image", "Ctrl+Shift+A")
-        # Shapes (circle, ellipse, square, rectangle), solar radii, remove / clear
-        from ..shape_annotations import setup_shape_menu
-
-        setup_shape_menu(self, annotate)
+        # The Annotate tool's commands (tools/annotations.py)
+        self.setup_annotate_menu(menu.addMenu("Annotate"))
 
         menu.addSeparator()
         self._action(menu, "Fit 2D Gaussian", self.fit_2d_gaussian,

@@ -22,7 +22,7 @@ from concurrent.futures import Future, wait
 from datetime import datetime
 from multiprocessing.reduction import ForkingPickler
 
-from PyQt5.QtCore import QCoreApplication, QThread, QTimer, QUrl, Qt, pyqtSignal
+from PyQt5.QtCore import QCoreApplication, QEvent, QThread, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -37,6 +37,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTextEdit,
@@ -48,6 +49,7 @@ from ..processing.workers import process_pool
 from .activity import Spinner
 from .background import Cancelled, wait_for
 from .styles import SPACE_L, SPACE_M
+from .widgets import PathEdit
 
 
 def _run_task(job):
@@ -150,6 +152,13 @@ def _escape(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _breakable(html):
+    """``html`` with a line allowed to break after each _ . - of its text
+    (not inside its tags): a long file name in a summary value wraps
+    instead of running out of the column, cut."""
+    return re.sub(r"(<[^>]*>)|([_.-])", lambda m: m.group(1) or m.group(2) + "​", html)
+
+
 def _short_home(path):
     home = os.path.expanduser("~")
     if path == home or path.startswith(home + os.sep):
@@ -249,6 +258,18 @@ class BatchWindow(QDialog):
         self.form_layout.addStretch()
         set_hand_cursor(self)
         self.update_summary()
+        # Never narrower than the form and the summary's least width, so the
+        # form needs no scroll bar under it; only a screen too small for
+        # that gets one
+        from .geometry import available_size
+
+        scroll = self.form.parentWidget().parentWidget()
+        need = self.form.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width()
+        need += self.side_pages.parentWidget().minimumWidth()
+        need = min(need, int(available_size(self).width() * 0.9))
+        if need > self.minimumWidth():
+            self.setMinimumWidth(need)
+            self.resize(max(self.width(), need), self.height())
 
     def block(self, title, aside=None):
         """A titled block of the form; returns (layout, aside label or None)."""
@@ -339,7 +360,7 @@ class BatchWindow(QDialog):
         """A folder and the pattern its files must match; the count of
         matching files at the block's right."""
         layout, self.files_count_label = self.block(title, "")
-        self.dir_edit = QLineEdit(folder)
+        self.dir_edit = PathEdit(folder)
         self.dir_edit.setPlaceholderText("The folder the images are in")
         layout.addLayout(self.path_row(self.dir_edit, self.browse_directory, "Folder"))
         self.dir_edit.editingFinished.connect(lambda: self.input_folder_chosen(self.dir_edit.text()))
@@ -357,7 +378,7 @@ class BatchWindow(QDialog):
     def output_block(self, folder="", pattern="", title="Save to"):
         """The output folder and the output names' pattern."""
         layout, _ = self.block(title)
-        self.out_dir_edit = QLineEdit(folder)
+        self.out_dir_edit = PathEdit(folder)
         self.out_dir_edit.setPlaceholderText("A folder, or a name for one inside the input folder")
         layout.addLayout(self.path_row(self.out_dir_edit, self.browse_output_directory, "Folder"))
         self.output_pattern_edit = QLineEdit(pattern)
@@ -369,6 +390,7 @@ class BatchWindow(QDialog):
         row.addWidget(self.output_pattern_edit, 1)
         hint = QLabel("* is the input's name")
         hint.setObjectName("Meta")
+        hint.setWordWrap(True)
         row.addWidget(hint)
         layout.addLayout(row)
         return layout
@@ -393,6 +415,7 @@ class BatchWindow(QDialog):
         cores = multiprocessing.cpu_count()
         desc = QLabel(f"In separate processes · this computer has {cores} cores")
         desc.setObjectName("Meta")
+        desc.setWordWrap(True)  # (on a small screen: no scroll bar under the form)
         text.addWidget(desc)
         row.addLayout(text, 1)
         self.cores_spinbox = QSpinBox()
@@ -551,8 +574,17 @@ class BatchWindow(QDialog):
         self.files_list.setWordWrap(True)
         self.files_list.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.files_list.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self.files_list)
-        layout.addStretch()
+        # The list takes the room left under the rows, never theirs, and
+        # shows as many names as fit there (_fit_files). It lies in a box
+        # without a layout: a wrapped label in the layout would ask for the
+        # height of all its lines, squeezing the rows.
+        self.files_box = QWidget()
+        self.files_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
+        self.files_list.setParent(self.files_box)
+        self.files_box.installEventFilter(self)
+        self._file_names, self._files_total = [], 0
+        layout.addWidget(self.files_box, 1)
+        layout.addStretch()  # (the room, while there is no list)
         self.note_label = self._label("", "Meta")
         self.note_label.setWordWrap(True)
         layout.addWidget(self.note_label)
@@ -677,28 +709,49 @@ class BatchWindow(QDialog):
             text = rows.get(key)
             name.setVisible(text is not None)
             value.setVisible(text is not None)
-            value.setText(text or "")
+            value.setText(_breakable(text) if text else "")
         files = info.get("files", [])
         self.files_rule.setVisible(bool(files))
         self.files_head.setVisible(bool(files))
-        self.files_list.setVisible(bool(files))
+        self.files_box.setVisible(bool(files))
         if files:
-            shown = files[:FILES_LISTED]
             self.files_head.setText(info.get("files_head", "Images"))
             # long names may break after _ . - only
-            names = [
+            self._file_names = [
                 re.sub(r"([_.-])", "\\1\u200b", _escape(os.path.basename(f.rstrip("/\\"))))
-                for f in shown
+                for f in files[:FILES_LISTED]
             ]
-            more = len(files) - len(shown)
-            if more:
-                names.append(f"<span style='color:{secondary}'>and {more} more</span>")
-            self.files_list.setText("<br>".join(names))
+            self._files_total = len(files)
+            self._fit_files()
         self.note_label.setText(info.get("note", ""))
+        self.note_label.setVisible(bool(info.get("note")))  # (its room to the rows above)
         self.ok_button.setEnabled(self._problem is None)
         verb = info.get("verb")
         if verb:
             self.ok_button.setText(verb)
+
+    def _fit_files(self):
+        """The summary's file names, as many as fit the list's height (all
+        of the first FILES_LISTED while it has no height yet), then how
+        many more there are."""
+        from .styles import theme_manager
+
+        secondary = theme_manager.palette["text_secondary"]
+        names, total = self._file_names, self._files_total
+        self.files_list.setGeometry(self.files_box.rect())
+        width, height = self.files_box.width(), self.files_box.height()
+        for count in range(len(names), -1, -1):
+            lines = names[:count]
+            if total > count:
+                lines = lines + [f"<span style='color:{secondary}'>and {total - count} more</span>"]
+            self.files_list.setText("<br>".join(lines))
+            if height <= 1 or self.files_list.heightForWidth(width) <= height:
+                break
+
+    def eventFilter(self, watched, event):
+        if watched is self.files_box and event.type() == QEvent.Resize and self._file_names:
+            self._fit_files()
+        return super().eventFilter(watched, event)
 
     def ready(self):
         """Refresh the summary; whether a run can start."""

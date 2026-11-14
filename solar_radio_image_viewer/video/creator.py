@@ -32,6 +32,7 @@ from ..processing.norms import (
 )
 from ..processing.colormaps import ensure_solar_colormaps
 from ..processing.fits_io import casa_observation_date, fits_image_path, is_casa_image
+from ..processing.stokes import unit_name
 from ..processing.workers import process_pool_executor
 from .coordinates import ConversionError, conversion_cache, frame_file
 from .lightcurve import (
@@ -654,8 +655,8 @@ def process_image(
 
                 drop_outside_ticks(cbar, norm.vmin, norm.vmax)
 
-            # Add units if available
-            cbar.set_label(header["BUNIT"] if header and "BUNIT" in header else "", fontsize=12)
+            # The unit, written as the main window writes it ("Jy/beam" for a file's "JY/BEAM")
+            cbar.set_label(unit_name(header["BUNIT"]) if header and "BUNIT" in header else "", fontsize=12)
         else:
             cbar = None
 

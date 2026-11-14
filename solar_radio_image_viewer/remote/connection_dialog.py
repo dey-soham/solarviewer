@@ -48,8 +48,8 @@ from PyQt5.QtWidgets import (
 from ..ui.activity import ActivityLabel, Spinner
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.geometry import fit_to_screen
-from ..ui.styles import MONO_FAMILY, RADIUS, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_tone, theme_manager, themed
-from ..ui.widgets import button_bar, dialog_layout, kicker, rule, segmented
+from ..ui.styles import RADIUS, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_tone, theme_manager, themed
+from ..ui.widgets import PathEdit, button_bar, dialog_layout, empty_note, kicker, rule, segmented
 from .browser_parts import ElidedLabel, PlaceRow, SmallLink, icon, waited
 from .ssh_manager import (
     ConnectionProfile,
@@ -449,6 +449,8 @@ class ConnectionDialog(QDialog):
         self._agent_answered.connect(self._on_agent_answered)
         self._keyring_answered.connect(self._on_keyring_answered)
         self._select_initial()
+        # The sidebar keeps its width: the form keeps room for a host name
+        self.setMinimumWidth(self.sidebar.minimumWidth() + 440)
         fit_to_screen(self, 760, self.sizeHint().height())
         _in_background(self._ask_agent)
 
@@ -514,10 +516,8 @@ class ConnectionDialog(QDialog):
         layout.addLayout(line)
         return self.sidebar
 
-    def _field(self, mono=True, placeholder=""):
-        edit = QLineEdit()
-        if mono:
-            edit.setObjectName("MonoEdit")
+    def _field(self, placeholder="", kind=QLineEdit):
+        edit = kind()
         edit.setPlaceholderText(placeholder)
         return edit
 
@@ -628,7 +628,7 @@ class ConnectionDialog(QDialog):
         box.setSpacing(SPACE_S)
         key_row = QHBoxLayout()
         key_row.setSpacing(8)
-        self.key_path_edit = self._field(placeholder=_default_key_path())
+        self.key_path_edit = self._field(placeholder=_default_key_path(), kind=PathEdit)
         self.browse_key_btn = QPushButton("Browse…")
         self.browse_key_btn.setAutoDefault(False)
         self.browse_key_btn.clicked.connect(self._browse_key_file)
@@ -676,7 +676,7 @@ class ConnectionDialog(QDialog):
         profile = QHBoxLayout()
         profile.setSpacing(8)
         profile.addWidget(self._label("Name"))
-        self.name_edit = self._field(mono=False, placeholder="Name of the saved server")
+        self.name_edit = self._field(placeholder="Name of the saved server")
         profile.addWidget(self.name_edit, 1)
         self.save_switch = QCheckBox("Save to list")
         self.save_switch.setObjectName("Switch")
@@ -706,7 +706,6 @@ class ConnectionDialog(QDialog):
         layout.setSpacing(8)
 
         self.test_btn = QPushButton("Test connection")
-        self.test_btn.setObjectName("GhostButton")
         self.test_btn.setAutoDefault(False)
         self.test_btn.clicked.connect(self._test_connection)
         layout.addWidget(self.test_btn)
@@ -726,7 +725,6 @@ class ConnectionDialog(QDialog):
         layout.addWidget(self.result_label, 1)
 
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setObjectName("GhostButton")
         self.cancel_btn.setAutoDefault(False)
         self.cancel_btn.clicked.connect(self._cancel)
         layout.addWidget(self.cancel_btn)
@@ -739,7 +737,7 @@ class ConnectionDialog(QDialog):
 
     def _apply_style(self, p):
         """What the shared roles lack: a saved server is a QFrame of labels,
-        so it takes PlaceRow's look here, and the monospace fields."""
+        so it takes PlaceRow's look here."""
         self.setStyleSheet(f"""
             QScrollArea#ConnRows, QScrollArea#ConnRows > QWidget > QWidget {{
                 background: transparent;
@@ -755,9 +753,6 @@ class ConnectionDialog(QDialog):
             QFrame#ProfileRow[selected="true"] {{
                 background-color: {p['window']};
                 border-left-color: {p['highlight']};
-            }}
-            QLineEdit#MonoEdit {{
-                font-family: {MONO_FAMILY};
             }}
         """)
 
@@ -786,12 +781,9 @@ class ConnectionDialog(QDialog):
             row.deleteRequested.connect(self._delete_profile)
             row.copyRequested.connect(self._copy_ssh_command)
             self.rows_layout.addWidget(row)
-        if not self._profiles:
-            empty = QLabel("Servers you save show here.")
-            empty.setObjectName("Meta")
-            empty.setWordWrap(True)
-            empty.setContentsMargins(6, 0, 0, 0)
-            self.rows_layout.addWidget(empty)
+        if not self._profiles:  # (in the middle of the column, not a line at its top)
+            self.rows_layout.addStretch()
+            self.rows_layout.addWidget(empty_note("Servers you save show here."))
         self.rows_layout.addStretch()
         self.new_btn.setProperty("current", "true" if self._selected < 0 else "false")
         self.new_btn.style().unpolish(self.new_btn)

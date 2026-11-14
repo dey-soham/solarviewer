@@ -489,7 +489,7 @@ class RemoteModeMixin:
             QVBoxLayout,
         )
 
-        from ..ui.widgets import dialog_layout
+        from ..ui.widgets import button_bar, dialog_layout
 
         # Check if dialog is already open
         if hasattr(self, "_cache_manager_dialog") and self._cache_manager_dialog:
@@ -555,10 +555,14 @@ class RemoteModeMixin:
                 total_size += size
 
         if not checkboxes:
-            no_cache = QLabel("All caches are currently empty.")
-            no_cache.setObjectName("Hint")
-            no_cache.setAlignment(Qt.AlignCenter)
-            layout.addWidget(no_cache)
+            # Nothing to choose or clear: say so, and only Close
+            desc.setText("All caches are empty.")
+            box, _ = button_bar(secondary=("Close", dialog.reject))
+            layout.addWidget(box)
+            dialog.show()  # Non-modal
+            dialog.raise_()
+            dialog.activateWindow()
+            return
 
         layout.addStretch()
 
@@ -682,6 +686,19 @@ class RemoteModeMixin:
         clear_btn.clicked.connect(do_clear)
         btn_layout.addWidget(clear_btn)
 
+        def follow_choice():
+            """Clear selected only with something selected, Select all
+            only with something left to select."""
+            chosen = [cb.isChecked() for cb in checkboxes.values()]
+            clear_btn.setEnabled(any(chosen))
+            # (in red only while it can clear: the tone has no dimmed look)
+            set_tone(clear_btn, "error" if any(chosen) else None)
+            select_all_btn.setEnabled(not all(chosen))
+
+        for cb in checkboxes.values():
+            cb.toggled.connect(follow_choice)
+        follow_choice()
+
         layout.addLayout(btn_layout)
         dialog.show()  # Non-modal
         dialog.raise_()
@@ -730,7 +747,7 @@ class RemoteModeMixin:
         if total_size is None:
             self.clear_cache_act.setText("Manage cache…")
         else:
-            self.clear_cache_act.setText(f"Manage cache ({self._format_size(total_size)})")
+            self.clear_cache_act.setText(f"Manage cache ({self._format_size(total_size)})…")
 
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""

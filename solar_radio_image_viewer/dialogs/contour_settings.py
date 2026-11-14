@@ -37,7 +37,7 @@ from ..ui.busy import busy
 from ..ui.geometry import fit_to_screen
 from ..ui.icons import get_resource_path
 from ..ui.open_image import choose_image
-from ..ui.widgets import button_bar, dialog_layout, kicker, segmented
+from ..ui.widgets import PathEdit, button_bar, dialog_layout, kicker, segmented
 from ..ui.styles import SPACE_L, SPACE_M, SPACE_S, set_hand_cursor, theme_manager, themed
 from .form import field_label, follow_swatches, form_block, swatch_icon
 
@@ -216,7 +216,7 @@ class ContourSettingsDialog(QDialog):
         path_label = field_label("Path")
         path_row.addWidget(path_label)
 
-        self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
+        self.file_path_edit = PathEdit(self.settings.get("external_image", ""))
         self.file_path_edit.setPlaceholderText("FITS file or CASA image")
         self.file_path_edit.setReadOnly(True)
         path_row.addWidget(self.file_path_edit, 1)
@@ -237,7 +237,7 @@ class ContourSettingsDialog(QDialog):
         series_layout = QGridLayout(self.series_group)
         series_layout.setContentsMargins(0, 0, 0, 0)
         series_layout.addWidget(field_label("Folder"), 0, 0)
-        self.series_dir_edit = QLineEdit(self.settings.get("series_dir", ""))
+        self.series_dir_edit = PathEdit(self.settings.get("series_dir", ""))
         self.series_dir_edit.setPlaceholderText("Folder of the contour images…")
         series_layout.addWidget(self.series_dir_edit, 0, 1)
         series_browse = QPushButton("Browse…")
@@ -357,6 +357,13 @@ class ContourSettingsDialog(QDialog):
         appearance_layout.setSpacing(SPACE_M)
         appearance_layout.setContentsMargins(0, SPACE_M, 0, 0)
 
+        def inline_label(text):
+            """A name inside a row, after a field: only as wide as itself
+            (a row's first name has the width of the others)."""
+            label = QLabel(text)
+            label.setObjectName("Hint")
+            return label
+
         # Helper to create color combo: the default palette, then the extras
         def create_color_combo(default_color):
             combo = QComboBox()
@@ -378,7 +385,7 @@ class ContourSettingsDialog(QDialog):
         )
         pos_row.addWidget(self.pos_color_combo, 0, 1)
 
-        pos_row.addWidget(field_label("Width"), 0, 2)
+        pos_row.addWidget(inline_label("Width"), 0, 2)
         self.pos_linewidth_spin = QDoubleSpinBox()
         self.pos_linewidth_spin.setRange(0.5, 5.0)
         self.pos_linewidth_spin.setSingleStep(0.5)
@@ -387,7 +394,7 @@ class ContourSettingsDialog(QDialog):
         )
         pos_row.addWidget(self.pos_linewidth_spin, 0, 3)
 
-        pos_row.addWidget(field_label("Style"), 0, 4)
+        pos_row.addWidget(inline_label("Style"), 0, 4)
         self.pos_linestyle_combo = QComboBox()
         self.pos_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
         linestyle_map = {"-": 0, "--": 1, "-.": 2, ":": 3}
@@ -404,7 +411,7 @@ class ContourSettingsDialog(QDialog):
         )
         neg_row.addWidget(self.neg_color_combo, 0, 1)
 
-        neg_row.addWidget(field_label("Width"), 0, 2)
+        neg_row.addWidget(inline_label("Width"), 0, 2)
         self.neg_linewidth_spin = QDoubleSpinBox()
         self.neg_linewidth_spin.setRange(0.5, 5.0)
         self.neg_linewidth_spin.setSingleStep(0.5)
@@ -413,7 +420,7 @@ class ContourSettingsDialog(QDialog):
         )
         neg_row.addWidget(self.neg_linewidth_spin, 0, 3)
 
-        neg_row.addWidget(field_label("Style"), 0, 4)
+        neg_row.addWidget(inline_label("Style"), 0, 4)
         self.neg_linestyle_combo = QComboBox()
         self.neg_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
         current_neg = self.settings.get("neg_linestyle", "--")
@@ -884,7 +891,7 @@ class ContourSettingsDialog(QDialog):
     def _build_layer_panel(self):
         """The layer list with Add / Duplicate / Remove."""
         panel = QWidget()
-        panel.setFixedWidth(panel.fontMetrics().averageCharWidth() * 40)
+        panel.setFixedWidth(panel.fontMetrics().averageCharWidth() * 32)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(SPACE_S)
@@ -962,9 +969,10 @@ class ContourSettingsDialog(QDialog):
         self.add_layer_btn.setEnabled(not full)
         self.duplicate_layer_btn.setEnabled(not full)
         self.remove_layer_btn.setEnabled(count > 1)
+        # (not "1 of 10", which reads as a page count)
         self.layer_count_label.setText(
-            f"{count} of {MAX_CONTOUR_LAYERS} layers"
-            + (" (maximum reached)" if full else "")
+            f"{count} layer{'' if count == 1 else 's'} · "
+            + ("the most there can be" if full else f"up to {MAX_CONTOUR_LAYERS}")
         )
 
     def _unused_color(self):

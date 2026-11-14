@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter, NullFormatter
 
 from ..ui.busy import busy
 from ..ui.geometry import fit_to_screen
@@ -25,6 +26,20 @@ from ..ui.plot_theme import figure_toolbar, follow_theme
 from ..ui.widgets import dialog_layout
 from .spectra_common import rebin
 logger = logging.getLogger(__name__)
+
+
+def _taken(values, selector, axis):
+    """``values``' samples along ``axis`` as the view draws them: a slice
+    (a stretch of the axis), or the sample of each cell of its fine grid
+    (-1: no sample there, NaN)."""
+    if isinstance(selector, slice):
+        return values[selector, :] if axis == 0 else values[:, selector]
+    out = np.take(values, np.clip(selector, 0, None), axis=axis)
+    if axis == 0:
+        out[selector < 0, :] = np.nan
+    else:
+        out[:, selector < 0] = np.nan
+    return out
 
 
 def _compared(original, cleaned, scale):
@@ -466,17 +481,13 @@ class SpectraSavingMixin:
             axes[1].set_title("Current, cleaned")
             norm1 = self.canvas.get_normalization(orig_vmin, orig_vmax)
             norm2 = self.canvas.get_normalization(cle_vmin, cle_vmax)
-            im1 = axes[0].imshow(
-                orig_ma.T, origin="lower", aspect="auto", norm=norm1, cmap=self.canvas._cmap
-            )
-            fig.colorbar(im1, ax=axes[0], label="")
-            im2 = axes[1].imshow(
-                cle_ma.T, origin="lower", aspect="auto", norm=norm2, cmap=self.canvas._cmap
-            )
-            fig.colorbar(im2, ax=axes[1], label="")
-            axes[0].set_xlabel("Time index")
-            axes[1].set_xlabel("Time index")
-            axes[0].set_ylabel("Frequency index")
+            for ax, data, norm in ((axes[0], orig_ma, norm1), (axes[1], cle_ma, norm2)):
+                image = self._draw_compared(ax, data, norm)
+                bar = fig.colorbar(image, ax=ax)
+                # (the values as the view's colorbar writes them, not over a "1e10")
+                bar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.3g}"))
+                bar.ax.yaxis.set_minor_formatter(NullFormatter())
+            self._label_compared(axes, cle_ma.shape)
 
             win = QWidget()
             win.setWindowTitle("Original vs cleaned")
@@ -488,6 +499,75 @@ class SpectraSavingMixin:
             follow_theme(win, fig, canvas)
             self.canvas._popups.append(win)  # (closed with the viewer)
             win.show()
+
+    def _compare_layouts(self, shape):
+        """The view's (time, frequency) layouts, if they are of data of
+        ``shape`` (the page shown) and the file has both axes; else None."""
+        layouts = getattr(self.canvas, "_layouts", None)
+        if (
+            layouts is None
+            or self.canvas._time_axis is None
+            or self.canvas._freq_axis is None
+            or (len(layouts[0].centers), len(layouts[1].centers)) != tuple(shape)
+        ):
+            return None
+        return layouts
+
+    def _draw_compared(self, ax, data, norm):
+        """``data`` ((time, freq), masked) on ``ax`` where the view puts it:
+        UTC along time, MHz along frequency, each part of an uneven axis (or
+        its fine grid) where its samples are; by index without the axes.
+        Returns an image of it (for the colorbar)."""
+        layouts = self._compare_layouts(data.shape)
+        cmap = self.canvas._cmap
+        if layouts is None:
+            return ax.imshow(data.T, origin="lower", aspect="auto", norm=norm, cmap=cmap)
+        import matplotlib.dates as mdates
+        from datetime import datetime
+
+        day0 = mdates.date2num(datetime(1858, 11, 17))  # (MJD seconds -> matplotlib's days)
+        values = ma.filled(data.astype(np.float64), np.nan)
+        image = None
+        for tsel, x0, x1, tflip in layouts[0].parts():
+            for fsel, y0, y1, fflip in layouts[1].parts():
+                block = _taken(_taken(values, tsel, 0), fsel, 1)
+                if tflip:
+                    block = block[::-1, :]
+                if fflip:
+                    block = block[:, ::-1]
+                image = ax.imshow(
+                    ma.masked_invalid(block.T), origin="lower", aspect="auto", norm=norm, cmap=cmap,
+                    extent=(day0 + x0 / 86400.0, day0 + x1 / 86400.0, y0, y1), interpolation="nearest",
+                )
+        (x0, x1), (y0, y1) = layouts[0].extent(), layouts[1].extent()
+        ax.set_xlim(day0 + x0 / 86400.0, day0 + x1 / 86400.0)
+        ax.set_ylim(y0, y1)
+        return image
+
+    def _label_compared(self, axes, shape):
+        """The comparison's axes (of data of ``shape``) named as the view's:
+        the times in UTC with the date, the frequencies in MHz (or kHz),
+        on a logarithmic axis if the view's is."""
+        if self._compare_layouts(shape) is None:
+            for ax in axes:
+                ax.set_xlabel("Time index")
+            axes[0].set_ylabel("Frequency index")
+            return
+        import matplotlib.dates as mdates
+        from datetime import datetime, timedelta
+
+        start = datetime(1858, 11, 17) + timedelta(seconds=float(self.canvas._time_axis[0]))
+        for ax in axes:
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=6))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+            ax.set_xlabel(f"UTC · {start:%Y-%m-%d}")
+        unit = self.canvas._freq_unit
+        scale = 1000.0 if unit == "kHz" else 1.0
+        if self.canvas._log_freq:
+            axes[0].yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{10 ** y * scale:.3g}"))
+        else:
+            axes[0].yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y * scale:.4g}"))
+        axes[0].set_ylabel(unit)
 
     def revertToOriginal(self):
         """Remove all masks, drawn and extended, and the Keep regions (Undo

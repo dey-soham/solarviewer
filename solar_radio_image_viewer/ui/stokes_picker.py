@@ -5,7 +5,8 @@ them the correlation planes the image holds (RR, LL, XX...), if any.
 
 The dropdown is the one QComboBox the rest of the tab reads and sets
 (``stokes_combo``): it holds every product, and the segmented buttons
-follow it. While a base product is chosen the dropdown just says "More".
+follow it. While a base product is chosen the dropdown just says "More",
+and its list leaves out the four that have buttons.
 """
 
 from PyQt5.QtCore import Qt
@@ -91,6 +92,10 @@ class StokesPicker(QWidget):
         self.combo.addItems(list(PRODUCTS))
         self.combo.setItemDelegate(DisabledItemDelegate(self.combo))
         self.combo.setToolTip("Derived Stokes products")
+        # Its list is of what the buttons do not offer (the items stay, for
+        # the tab to read and set)
+        for row in range(len(BASE)):
+            self.combo.view().setRowHidden(row, True)
         width = self.combo.fontMetrics().horizontalAdvance("Lfrac") + 36
         self.combo.setFixedWidth(width)
 

@@ -157,7 +157,7 @@ class FileNavigationMixin:
             if loaded:
                 remember_image(path)
                 self.show_status_message(
-                    f"Loaded {path} in {time.time() - start_time:.2f} seconds"
+                    f"Loaded {os.path.basename(path.rstrip('/'))} in {time.time() - start_time:.2f} s"
                 )
             elif loaded is False:  # unreadable (None: the user cancelled)
                 forget_image(path)
@@ -1038,12 +1038,21 @@ except Exception:
 
         from PyQt5.QtWidgets import QInputDialog
 
-        pattern, ok = QInputDialog.getText(
-            self,
-            "File filter pattern",
-            "Enter glob pattern to filter files:\n(e.g., *-image.fits, chunk_*.fits, *.image)",
-            text=self._file_filter_pattern,
+        from PyQt5.QtWidgets import QLabel
+
+        ask = QInputDialog(self)
+        ask.setWindowTitle("File filter pattern")
+        ask.setLabelText(
+            "The files to step through. * stands for any part of a name, "
+            "as in *-image.fits, chunk_*.fits or *.image"
         )
+        ask.setTextValue(self._file_filter_pattern)
+        ask.setOkButtonText("Apply")
+        for label in ask.findChildren(QLabel):
+            label.setWordWrap(True)  # (the line breaks where the dialog's width ends)
+        ask.setMinimumWidth(380)
+        ok = ask.exec_() == QInputDialog.Accepted
+        pattern = ask.textValue()
 
         if ok:
             self._file_filter_pattern = pattern if pattern else "*"
@@ -1102,8 +1111,10 @@ except Exception:
             QHBoxLayout,
             QLabel,
             QListWidget,
-            QPushButton,
+            QListWidgetItem,
         )
+
+        from ..ui.widgets import button_bar
 
         # Check if file list exists
         if not self._file_list and not self._is_remote_mode:
@@ -1127,6 +1138,7 @@ except Exception:
         dialog = QDialog(self)
         dialog.setWindowTitle("File list")
         set_hand_cursor(dialog)
+        dialog.setMinimumSize(440, 300)  # (the search field, and names as long as a LOFAR image's whole)
         fit_to_screen(dialog, 550, 700)
 
         # Store reference to prevent garbage collection
@@ -1143,24 +1155,30 @@ except Exception:
         search_input.setClearButtonEnabled(True)
         header_layout.addWidget(search_input, 1)
 
-        info_badge = QLabel(
-            f"Filter: {self._file_filter_pattern} · {len(self._file_list)} files"
-        )
-        info_badge.setObjectName("Badge")
-        header_layout.addWidget(info_badge)
+        # The filter and the count as a plain note (a badge read as a button)
+        count = len(self._file_list)
+        info_note = QLabel(f"{self._file_filter_pattern} · {count} file{'' if count == 1 else 's'}")
+        info_note.setObjectName("Meta")
+        info_note.setToolTip("The file filter pattern and the files it matches")
+        header_layout.addWidget(info_note)
 
         layout.addLayout(header_layout)
 
-        # File list
+        # File list: the names, each item keeping its place in the list
         file_list_widget = QListWidget()
+        # A name too long for the window keeps its start and its end
+        file_list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        file_list_widget.setTextElideMode(Qt.ElideMiddle)
 
-        # Store original file list for filtering
-        original_items = []
-        for i, path in enumerate(self._file_list):
-            filename = os.path.basename(path)
-            item_text = f"{i + 1}. {filename}"
-            file_list_widget.addItem(item_text)
-            original_items.append((i, item_text, path))
+        def add_item(index, path):
+            item = QListWidgetItem(os.path.basename(path))
+            item.setData(Qt.UserRole, index)
+            item.setToolTip(os.path.basename(path))
+            file_list_widget.addItem(item)
+
+        original_items = list(enumerate(self._file_list))
+        for i, path in original_items:
+            add_item(i, path)
 
         # Search/filter function
         def filter_files(search_text):
@@ -1169,17 +1187,17 @@ except Exception:
 
             if not search_text:
                 # Show all items
-                for idx, item_text, path in original_items:
-                    file_list_widget.addItem(item_text)
+                for idx, path in original_items:
+                    add_item(idx, path)
                 # Restore selection
                 if self._file_list_index >= 0:
                     file_list_widget.setCurrentRow(self._file_list_index)
             else:
                 # Filter items
-                for idx, item_text, path in original_items:
+                for idx, path in original_items:
                     filename = os.path.basename(path).lower()
                     if search_text in filename:
-                        file_list_widget.addItem(item_text)
+                        add_item(idx, path)
 
         search_input.textChanged.connect(filter_files)
 
@@ -1188,19 +1206,6 @@ except Exception:
             file_list_widget.setCurrentRow(self._file_list_index)
 
         layout.addWidget(file_list_widget, stretch=1)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(SPACE_S)
-
-        open_btn = QPushButton("Open")
-        open_btn.setObjectName("PrimaryButton")
-        open_btn.setDefault(True)
-        open_btn.setCursor(Qt.PointingHandCursor)
-
-        close_btn = QPushButton("Close")
-        close_btn.setAutoDefault(False)
-        close_btn.setCursor(Qt.PointingHandCursor)
 
         # Store references for use in callbacks
         viewer = self
@@ -1219,17 +1224,8 @@ except Exception:
                     viewer.show_status_message("Please select a file first.")
                     return
 
-                # Extract original index from item text (format: "N. filename")
-                item_text = current_item.text()
-                try:
-                    original_idx = (
-                        int(item_text.split(".")[0]) - 1
-                    )  # Convert to 0-based index
-                except (ValueError, IndexError):
-                    viewer.show_status_message("Error parsing file index.")
-                    return
-
-                if original_idx < 0 or original_idx >= len(viewer._file_list):
+                original_idx = current_item.data(Qt.UserRole)
+                if original_idx is None or original_idx < 0 or original_idx >= len(viewer._file_list):
                     viewer.show_status_message("Invalid file selection.")
                     return
 
@@ -1273,15 +1269,9 @@ except Exception:
             if getattr(viewer, "_playlist_dialog", None) == dialog:
                 viewer._playlist_dialog = None
 
-        open_btn.clicked.connect(on_open)
-        close_btn.clicked.connect(on_close)
         file_list_widget.itemDoubleClicked.connect(on_double_click)
-
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-        btn_layout.addWidget(open_btn)
-
-        layout.addLayout(btn_layout)
+        box, _ = button_bar(primary=("Open", on_open), secondary=("Close", on_close))
+        layout.addWidget(box)
 
         # Set up dialog for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)

@@ -205,9 +205,10 @@ class HelpMixin:
 
     # Keys and mouse gestures of the image, which no menu shows. Handled by
     # handle_view_key (R, 1, +, -, arrows, the tools' keys), the regions'
-    # keys (roi_stats.py _on_region_key), keyPressEvent below (Space,
-    # Enter, Esc), the file navigation shortcuts ([ ] { }) and the tab bar
-    # (Ctrl+Tab); keep this list in step with them.
+    # keys (roi_stats.py _on_region_key), the annotations' (annotations.py
+    # _annot_key), keyPressEvent below (Space, Enter, Esc), the file
+    # navigation shortcuts ([ ] { }) and the tab bar (Ctrl+Tab); keep this
+    # list in step with them.
     IMAGE_KEYS = [
         ("R", "Reset the view"),
         ("1", "Zoom to 1° × 1°"),
@@ -219,9 +220,11 @@ class HelpMixin:
         ("E", "Ellipse tool"),
         ("L", "Ruler tool (measure a distance)"),
         ("P", "Profile tool (the flux along a line cut)"),
-        ("Delete  or  Backspace", "Delete the selected region (Rectangle or Ellipse tool)"),
+        ("A", "Annotate tool (text, arrows and shapes on the image)"),
+        ("Delete  or  Backspace", "Delete the selected region or annotation"),
+        ("Enter", "Change the selected annotation (Annotate tool)"),
         ("Space  or  Enter", "Redraw the image"),
-        ("Esc", "Leave a text field (the keys above then work again); deselect the region"),
+        ("Esc", "Leave a text field (the keys above then work again); deselect the region or annotation"),
         ("[  or  ]", "Previous / next file in the folder"),
         ("{  or  }", "First / last file in the folder"),
         ("Ctrl+Tab  or  Ctrl+Shift+Tab", "Next / previous tab"),
@@ -231,8 +234,9 @@ class HelpMixin:
         ("Scroll  or  Pinch", "Zoom about the pointer"),
         ("Middle-drag", "Pan (left-drag too, with the Pan tool)"),
         ("Right-drag", "Zoom to the box drawn"),
-        ("Double-click", "Zoom in (with the Pan tool); Shift: zoom out"),
-        ("Shift-drag", "A square or circle (Rectangle, Ellipse); 15° steps when rotating a region"),
+        ("Double-click", "Zoom in (with the Pan tool); Shift: zoom out. Change an annotation (Annotate tool)"),
+        ("Shift-drag", "A square or circle (Rectangle, Ellipse); 15° steps when turning a region, a shape or an arrow"),
+        ("Right-click", "What can be done with the annotation under the pointer (Annotate tool)"),
     ]
 
     def _shortcut_sections(self):
@@ -299,24 +303,21 @@ class HelpMixin:
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(4)
 
-            # Handle "or" alternatives first (like "+ or =")
-            if "  or  " in key_text:
-                alternatives = key_text.split("  or  ")
-                for j, alt in enumerate(alternatives):
-                    if j > 0:
-                        or_label = QLabel("or")
-                        or_label.setObjectName("Hint")
-                        layout.addWidget(or_label)
-                    badge = QLabel(alt.strip())
-                    badge.setObjectName("Key")
-                    layout.addWidget(badge)
-            # Handle compound keys like "Ctrl+O"
-            elif "+" in key_text and len(key_text) > 1:
-                parts = key_text.split("+")
-                for i, part in enumerate(parts):
-                    part = part.strip()
-                    if not part:
-                        continue
+            # "or" between alternatives (like "+ or ="), and each alternative
+            # a cap per key joined by "+" ("Ctrl+O"), with or without others
+            for j, alt in enumerate(key_text.split("  or  ")):
+                alt = alt.strip()
+                if j > 0:
+                    or_label = QLabel("or")
+                    or_label.setObjectName("Hint")
+                    layout.addWidget(or_label)
+                if alt.endswith("++"):  # (the + key itself, after its modifiers)
+                    parts = alt[:-2].split("+") + ["+"]
+                elif len(alt) > 1:
+                    parts = alt.split("+")
+                else:
+                    parts = [alt]
+                for i, part in enumerate(p.strip() for p in parts if p.strip()):
                     if i > 0:
                         plus = QLabel("+")
                         plus.setObjectName("Hint")
@@ -324,17 +325,13 @@ class HelpMixin:
                     badge = QLabel(part)
                     badge.setObjectName("Key")
                     layout.addWidget(badge)
-            else:
-                # Single key
-                badge = QLabel(key_text.strip())
-                badge.setObjectName("Key")
-                layout.addWidget(badge)
 
             layout.addStretch()
             return container
 
         # Store all shortcut widgets for filtering
         all_shortcut_widgets = []
+        grids = []
 
         def create_category_section(name, shortcuts):
             """Create a styled category section."""
@@ -344,9 +341,8 @@ class HelpMixin:
             grid = QGridLayout(section)
             grid.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
             grid.setSpacing(SPACE_S)
-            # Wide enough for the widest keys, so all sections line up
-            grid.setColumnMinimumWidth(0, 290)
             grid.setColumnStretch(1, 1)  # descriptions next to their keys
+            grids.append(grid)
 
             shortcut_rows = []
             for row, (key, action) in enumerate(shortcuts):
@@ -369,6 +365,18 @@ class HelpMixin:
             section, rows = create_category_section(name, shortcuts)
             scroll_layout.addWidget(section)
             all_shortcut_widgets.extend([(section, rows)])
+
+        # The keys' column as wide as the widest keys, in every section, so
+        # that all line up with no more room than those need
+        scroll_content.ensurePolished()  # (the caps' size is the stylesheet's)
+        key_width = max(
+            (key.sizeHint().width() for _, rows in all_shortcut_widgets for key, *_ in rows),
+            default=0,
+        )
+        for grid in grids:
+            grid.setColumnMinimumWidth(0, key_width)
+        # No narrower than the keys and a short line of what they do
+        dialog.setMinimumSize(key_width + 260, 320)
 
         no_match = empty_note("No shortcut matches. Clear the filter to see them all.")
         no_match.hide()

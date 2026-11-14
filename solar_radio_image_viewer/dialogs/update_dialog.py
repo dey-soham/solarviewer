@@ -74,8 +74,8 @@ class UpdateDialog(QDialog):
         info_grid = form_block(layout, longest="Current version")
 
         # Current Version
+        # (the values in the one typeface of the rows, a version as the path)
         self.current_ver_label = QLabel(f"{__version__}")
-        self.current_ver_label.setObjectName("Mono")
 
         info_grid.addWidget(field_label("Current version"), 0, 0)
         info_grid.addWidget(self.current_ver_label, 0, 1)
@@ -89,9 +89,8 @@ class UpdateDialog(QDialog):
 
         # Latest Version
         self.latest_ver_label = QLabel("Checking…")
-        self.latest_ver_label.setObjectName("Mono")
-
-        info_grid.addWidget(field_label("Latest version"), 2, 0)
+        self.latest_name = field_label("Latest version")
+        info_grid.addWidget(self.latest_name, 2, 0)
         info_grid.addWidget(self.latest_ver_label, 2, 1)
 
         # Status Message area
@@ -197,6 +196,9 @@ class UpdateDialog(QDialog):
 
         self.install, self.update = install, update
         self.how_label.setText(install.describe())
+        # A copy from git is updated to commits, not versions
+        git = install.kind in (updates.GIT_URL, updates.CHECKOUT)
+        self.latest_name.setText("Latest" if git else "Latest version")
         self.status.stop()
         if update.error:
             logger.warning("Update check failed: %s", update.error)

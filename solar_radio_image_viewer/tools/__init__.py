@@ -7,13 +7,13 @@ combined into the main classes in ``viewer.py``:
 - ``SolarRadioImageTab``: RoiStatsMixin, RulerMixin, ProfileMixin,
   TbModeMixin, AnnotationsMixin, HpcViewMixin, SolarDiskMixin,
   ImageStatsMixin, SolarEventsMixin
-- ``SolarRadioImageViewerApp``: AnnotationDialogsMixin, FittingMixin
+- ``SolarRadioImageViewerApp``: AnnotationCommandsMixin, FittingMixin
 
 Mixins have no ``__init__``; the state they use (e.g. ``self._ruler_mode``,
 ``self.canvas``) is still initialised in the host class.
 """
 
-from .annotations import AnnotationDialogsMixin, AnnotationsMixin
+from .annotations import AnnotationCommandsMixin, AnnotationsMixin
 from .fitting import FittingMixin
 from .hpc_view import HpcViewMixin
 from .image_stats import ImageStatsMixin
@@ -31,7 +31,7 @@ __all__ = [
     "ProfileMixin",
     "TbModeMixin",
     "AnnotationsMixin",
-    "AnnotationDialogsMixin",
+    "AnnotationCommandsMixin",
     "FittingMixin",
     "HpcViewMixin",
     "SolarDiskMixin",

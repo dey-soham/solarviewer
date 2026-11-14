@@ -58,7 +58,7 @@ from ..remote.ssh_manager import UnknownHostKey, trust_host_key
 from ..ui.activity import Spinner, begin_activity
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import set_hand_cursor, set_tone
-from ..ui.widgets import button_bar, dialog_layout, kicker, link_button, rule, segmented
+from ..ui.widgets import PathEdit, button_bar, dialog_layout, kicker, link_button, rule, segmented
 
 ENGINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_dynamic_spectra.py")
 
@@ -1139,8 +1139,24 @@ def _put(key, value):
         pass
 
 
+class _QuietHint(QLabel):
+    """A hint in muted text, word-wrapped, that takes no room while it says
+    nothing."""
+
+    def __init__(self):
+        super().__init__("")
+        self.setObjectName("Hint")
+        self.setVisible(False)
+
+    def setText(self, text):
+        super().setText(text)
+        self.setVisible(bool(text))
+
+
 class DynamicSpectraDialog(QDialog):
     """Create a dynamic spectrum from Measurement Sets, here or on a server."""
+
+    NO_DATA = "Choose the data first."  # (why Create waits, before anything is chosen)
 
     def __init__(self, parent=None, theme="dark"):
         super().__init__(parent)
@@ -1303,7 +1319,7 @@ class DynamicSpectraDialog(QDialog):
         # Data
         card, lay = self._card("Data")
         drow = QHBoxLayout()
-        self.data_edit = QLineEdit()
+        self.data_edit = PathEdit()
         self.data_edit.setPlaceholderText("Measurement Sets")
         self.data_edit.setToolTip("A folder of Measurement Sets, one MS, or several separated by ;")
         self.data_edit.setClearButtonEnabled(True)
@@ -1333,14 +1349,13 @@ class DynamicSpectraDialog(QDialog):
         # Output
         card, lay = self._card("Output")
         orow = QHBoxLayout()
-        self.output_edit = QLineEdit()
+        self.output_edit = PathEdit()
         self.output_edit.setPlaceholderText("FITS file to write")
         orow.addWidget(self.output_edit, 1)
         self.output_browse_btn = QPushButton("Browse…")
         orow.addWidget(self.output_browse_btn)
         lay.addLayout(orow)
-        self.output_where = QLabel("")
-        self.output_where.setObjectName("Hint")
+        self.output_where = _QuietHint()
         lay.addWidget(self.output_where)
         self.plot_check = QCheckBox("Also save a plot (PNG)")
         self.plot_check.setChecked(True)
@@ -1353,7 +1368,7 @@ class DynamicSpectraDialog(QDialog):
         self.download_check.setChecked(True)
         dl.addWidget(self.download_check)
         drow2 = QHBoxLayout()
-        self.download_edit = QLineEdit()
+        self.download_edit = PathEdit()
         self.download_edit.setPlaceholderText("Local folder for the download")
         drow2.addWidget(self.download_edit, 1)
         self.download_browse_btn = QPushButton("Browse…")
@@ -1377,12 +1392,10 @@ class DynamicSpectraDialog(QDialog):
         mrow.addWidget(segmented([self.now_btn, self.slurm_btn]))
         mrow.addStretch()
         lay.addLayout(mrow)
-        self.mode_reason = QLabel("")
-        self.mode_reason.setObjectName("Hint")
+        self.mode_reason = _QuietHint()
         self.mode_reason.setWordWrap(True)
         lay.addWidget(self.mode_reason)
-        self.runtime_label = QLabel("")
-        self.runtime_label.setObjectName("Hint")
+        self.runtime_label = _QuietHint()
         self.runtime_label.setWordWrap(True)
         lay.addWidget(self.runtime_label)
         left.addWidget(self.exec_card)
@@ -1423,20 +1436,26 @@ class DynamicSpectraDialog(QDialog):
         grid.addWidget(self.pol_combo, 0, 3)
 
         grid.addWidget(QLabel("UV min"), 1, 0)
-        self.uvmin_spin = spin(0, 1e6, 130.0, 0, " lambda", special="No limit")
+        self.uvmin_spin = spin(0, 1e6, 130.0, 0, " λ", special="No limit")
         grid.addWidget(self.uvmin_spin, 1, 1)
         grid.addWidget(QLabel("UV max"), 1, 2)
-        self.uvmax_spin = spin(0, 1e6, 500.0, 0, " lambda", special="No limit")
+        self.uvmax_spin = spin(0, 1e6, 500.0, 0, " λ", special="No limit")
         grid.addWidget(self.uvmax_spin, 1, 3)
         self.uv_all_check = QCheckBox("Use all baselines (no UV cut)")
         grid.addWidget(self.uv_all_check, 2, 0, 1, 2)
         self.autocorr_check = QCheckBox("Use only autocorrelations")
         grid.addWidget(self.autocorr_check, 2, 2, 1, 2)
-        uvhint = self._hint(
+        uvhint = self._hint("Baselines between these lengths are used; 130 to 500 λ suits LOFAR solar data.")
+        # (the why, where it is asked for)
+        uvhint.setToolTip(
             "Only baselines with lengths between these limits (in wavelengths) are "
-            "used; 0 is no limit. The default, 130 to 500 lambda, is tuned for LOFAR "
+            "used; 0 is no limit. The default, 130 to 500 λ, is tuned for LOFAR "
             "solar data: short baselines see the whole Sun, so they keep the total "
-            "flux. For another array, set a range that fits its baselines or use all. "
+            "flux. For another array, set a range that fits its baselines or use all."
+        )
+        for w in (self.uvmin_spin, self.uvmax_spin):
+            w.setToolTip(uvhint.toolTip())
+        self.autocorr_check.setToolTip(
             "Autocorrelations (an antenna with itself) are never mixed in with the "
             "baselines; the spectrum can be made from them alone instead."
         )
@@ -1514,7 +1533,7 @@ class DynamicSpectraDialog(QDialog):
         sg.setVerticalSpacing(8)
         sg.setColumnStretch(1, 1)
         sg.addWidget(QLabel("Container (.sif) or python"), 0, 0)
-        self.container_edit = QLineEdit()
+        self.container_edit = PathEdit()
         self.container_edit.setPlaceholderText("Auto-detected; e.g. /project/.../image.sif")
         sg.addWidget(self.container_edit, 0, 1)
         sg.addWidget(QLabel("Slurm partition"), 1, 0)
@@ -2574,7 +2593,7 @@ class DynamicSpectraDialog(QDialog):
         if self._is_server() and not self._connected():
             return False, "Connect to a server first."
         if not self._paths():
-            return False, "Choose the data first."
+            return False, self.NO_DATA
         if self._scanning:
             return False, "Reading the data…"
         if self._summary is None:
@@ -2586,6 +2605,7 @@ class DynamicSpectraDialog(QDialog):
     def _update_state(self):
         """The one place that decides what can be pressed, from the run state."""
         ok, reason = self._can_create()
+        footer = "" if reason == self.NO_DATA else reason  # (the Data card says so already)
         self.run_btn.setEnabled(ok)
         self.run_btn.setToolTip(reason)
         busy = self._state != IDLE
@@ -2595,7 +2615,7 @@ class DynamicSpectraDialog(QDialog):
         self.connect_btn.setEnabled(not busy)
         self.resume_bar.setEnabled(not busy)
         if not busy and not self._final_status:
-            self._set_status(reason)
+            self._set_status(footer)
 
     def _show_problems(self, problems):
         errors = [p for p in problems if p[2] == "error"]

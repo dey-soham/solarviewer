@@ -7,14 +7,13 @@ from PyQt5.QtWidgets import (
     QWidget,
     QListWidgetItem,
     QDialog,
-    QDialogButtonBox,
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon
 from .geometry import fit_to_screen
 from .icons import get_resource_path
 from .styles import CONTROL_HEIGHT, get_icon_path, theme_manager, set_hand_cursor
-from .widgets import dialog_layout
+from .widgets import button_bar, dialog_layout
 
 
 class SearchDialog(QDialog):
@@ -23,6 +22,7 @@ class SearchDialog(QDialog):
     def __init__(self, parent=None, all_items=None):
         super().__init__(parent)
         self.setWindowTitle("Search colormaps")
+        self.setMinimumSize(300, 320)  # (the search field's words and a few names)
         fit_to_screen(self, 350, 400)
 
         self.all_items = all_items or []
@@ -36,13 +36,13 @@ class SearchDialog(QDialog):
         layout.addWidget(self.search_edit)
 
         self.list_widget = QListWidget()
+        # (the names are short: no scroll bar under them)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.itemClicked.connect(self.on_item_clicked)
         self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         layout.addWidget(self.list_widget)
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
+        button_box, _ = button_bar(primary=("Choose", self.accept), secondary=("Cancel", self.reject))
         layout.addWidget(button_box)
 
         self.populate_list_widget(self.all_items)

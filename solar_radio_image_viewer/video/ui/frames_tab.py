@@ -52,7 +52,10 @@ class FramesTabMixin:
         self.frame_every_spinbox = QSpinBox()
         self.frame_every_spinbox.setRange(1, 1000)
         self.frame_every_spinbox.setPrefix("every ")
-        self.frame_every_spinbox.setSuffix(" frame(s)")
+        self.frame_every_spinbox.setSuffix(" frame")
+        self.frame_every_spinbox.valueChanged.connect(
+            lambda n: self.frame_every_spinbox.setSuffix(" frame" if n == 1 else " frames")
+        )
         form.addRow(hint("Use"), self.frame_every_spinbox)
         layout.addLayout(form)
 

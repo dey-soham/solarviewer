@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QFileDialog,
     QGroupBox,
@@ -29,6 +28,7 @@ from .helpers import (
     hint,
 )
 from .progress import Job
+from ...ui.widgets import PathEdit
 
 
 def encoded_size(frame, ext, options):
@@ -75,7 +75,7 @@ class OutputTabMixin:
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.setSpacing(8)
 
-        self.output_file_edit = QLineEdit()
+        self.output_file_edit = PathEdit()
         file_layout.addWidget(self.output_file_edit)
 
         browse_output_btn = QPushButton("Browse…")

@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
 
 from .helioviewer_api import RSUN_ARCSEC
 from .noaa_events.widgets import ImageZoomView
-from .ui.styles import FONT_META, MONO_FAMILY, SPACE_S, theme_manager, themed
+from .ui.styles import FONT_META, MONO_FAMILY, SPACE_S, palette_for, themed
 from .ui.widgets import kicker, link_button
 
 logger = logging.getLogger(__name__)
@@ -419,8 +419,9 @@ def _mono(font: QFont, size=FONT_META) -> QFont:
 def draw_overlays(painter: QPainter, scene: Scene, canvas: Canvas, clip: QRectF, palette=None, font: Optional[QFont] = None):
     """Draw the overlays over the image: ``painter`` in device coordinates,
     ``canvas`` placing the image on it, ``clip`` the part of the device in
-    view. The same call paints the view and an exported frame."""
-    palette = palette or theme_manager.palette
+    view. The same call paints the view and an exported frame. They lie on
+    the image's black in either theme, so they take the dark theme's colours."""
+    palette = palette or palette_for("dark")
     g = scene.geometry
     frame = canvas.rect(0, 0, g.width, g.height).intersected(clip)
     if frame.isEmpty():
@@ -513,7 +514,7 @@ def _draw_ruler(painter, g, canvas, frame, palette):
     x_left, y_top = g.true_of_pixel((frame.left() - canvas.dx) / canvas.scale, (frame.top() - canvas.dy) / canvas.scale)
     x_right, y_bottom = g.true_of_pixel((frame.right() - canvas.dx) / canvas.scale, (frame.bottom() - canvas.dy) / canvas.scale)
     step = tick_step(x_right - x_left, frame.width())
-    bar_room = QRectF(frame.left(), frame.bottom() - 44, 220, 44)  # the scale bar's corner
+    bar_room = _scale_bar_room(painter, g, canvas, frame)  # the scale bar's corner
     tick, text = _pen(palette["text_faint"]), _pen(palette["text_dim"])
     # Bottom edge: Solar X
     value = math.ceil(x_left / step) * step
@@ -542,11 +543,26 @@ def _draw_ruler(painter, g, canvas, frame, palette):
         value += step
 
 
-def _draw_scale_bar(painter, g, canvas, frame, palette):
-    """``500″ = 363 Mm`` at the bottom left."""
+def _scale_bar(g, canvas):
+    """The scale bar's (length in arcsec, length in pixels, label)."""
     true_per_px = g.true_scale / canvas.scale
     length = bar_length(true_per_px)
-    px = length / true_per_px
+    return length, length / true_per_px, f"{arcsec_text(length)} = {group_digits(g.megametres(length))} Mm"
+
+
+def _scale_bar_room(painter, g, canvas, frame):
+    """The corner the scale bar and its label take, and a gap round them:
+    the ruler's labels keep out of it (and only of it)."""
+    _length, px, label = _scale_bar(g, canvas)
+    if px > frame.width() - 24:
+        return QRectF()  # (not drawn)
+    width = max(px, QFontMetricsF(painter.font()).horizontalAdvance(label)) + 12 + SPACE_S
+    return QRectF(frame.left(), frame.bottom() - 44, width, 44)
+
+
+def _draw_scale_bar(painter, g, canvas, frame, palette):
+    """``500″ = 363 Mm`` at the bottom left."""
+    length, px, label = _scale_bar(g, canvas)
     if px > frame.width() - 24:
         return
     x, y = frame.left() + 12, frame.bottom() - 14
@@ -555,7 +571,7 @@ def _draw_scale_bar(painter, g, canvas, frame, palette):
     painter.drawLine(QPointF(x, y - 3), QPointF(x, y + 3))
     painter.drawLine(QPointF(x + px, y - 3), QPointF(x + px, y + 3))
     painter.setPen(_pen(palette["text_dim"]))
-    painter.drawText(QPointF(x, y - 6), f"{arcsec_text(length)} = {group_digits(g.megametres(length))} Mm")
+    painter.drawText(QPointF(x, y - 6), label)
 
 
 def _draw_north(painter, frame, palette):

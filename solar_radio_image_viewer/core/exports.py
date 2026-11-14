@@ -642,7 +642,7 @@ class ExportsMixin:
     def save_sub_image(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or not current_tab.current_roi:
-            QMessageBox.warning(self, "No ROI", "Please select a region first")
+            QMessageBox.warning(self, "No region", "Draw a region first, with the Rectangle or Ellipse tool")
             return
 
         if not current_tab.imagename:
@@ -689,7 +689,7 @@ class ExportsMixin:
     def export_casa_region(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or not current_tab.current_roi:
-            QMessageBox.warning(self, "No ROI", "Please select a region first")
+            QMessageBox.warning(self, "No region", "Draw a region first, with the Rectangle or Ellipse tool")
             return
 
         path, _ = QFileDialog.getSaveFileName(

@@ -31,7 +31,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QGraphicsOpacityEffect
 from ..processing.stokes import SUN_RADIUS_ARCMIN
 from ..tools.roi_stats import NO_REGION_HINT
 from ..ui.conversion_control import ConversionControl
@@ -44,6 +43,7 @@ from ..ui.icons import launcher_icon, themed_icon
 from ..ui.stokes_picker import StokesPicker
 from ..ui.styles import set_tone
 from ..ui.widgets import (
+    PathEdit,
     inline_unit,
     kicker,
     kicker_row,
@@ -191,7 +191,7 @@ class PanelsMixin:
         layout.setSpacing(14)
 
         # The file: typed or pasted and entered, or chosen with the icon
-        self.dir_entry = QLineEdit()
+        self.dir_entry = PathEdit()
         self.dir_entry.setPlaceholderText("FITS file or CASA image")
         self.dir_entry.setToolTip(
             "The image shown. Type or paste a path and press Enter, or click "
@@ -332,8 +332,11 @@ class PanelsMixin:
     def _inspector_header(self):
         """One row at the top of the inspector: what the image is in (its
         unit, its coordinate frame; the other segment converts it), and
-        the two windows about its observation time. Faded while there is
-        no image."""
+        the two windows about its observation time. Its controls are
+        disabled while there is no image, which greys them enough: a
+        graphics effect to fade the row as well drew it out of place after
+        the window was resized, and left it too faint to read in the dark
+        theme."""
         header = QFrame()
         header.setObjectName("InspectorHeader")
         layout = QHBoxLayout(header)
@@ -386,9 +389,6 @@ class PanelsMixin:
         launchers.addWidget(self.noaa_events_btn)
         launchers.addWidget(self.helioviewer_btn)
         layout.addLayout(launchers)
-
-        self._header_opacity = QGraphicsOpacityEffect(header)
-        header.setGraphicsEffect(self._header_opacity)
         return header
 
     def show_image_context(self, time):
@@ -398,7 +398,6 @@ class PanelsMixin:
         if not hasattr(self, "cursor_readout"):
             return  # (the inspector is still being built)
         loaded = self.current_image_data is not None
-        self._header_opacity.setOpacity(1.0 if loaded else 0.45)
         if not loaded:
             self.tb_btn.clear()
             self.hpc_btn.clear()
@@ -845,7 +844,7 @@ class PanelsMixin:
         self.stats_table.hide()
         block_layout.addWidget(self.stats_table)
         self.histogram_btn = QPushButton("Histogram")
-        self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
+        self.histogram_btn.setToolTip("Histogram of the pixel values in the region")
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
         self.histogram_btn.hide()
         self.fit_gaussian_btn = QPushButton("Fit Gaussian")
@@ -856,8 +855,8 @@ class PanelsMixin:
         self.export_region_btn = QPushButton("Export")
         self.export_region_btn.setToolTip("Export the region: as a sub-image, or as a CASA region file")
         export_menu = QMenu(self.export_region_btn)
-        export_menu.addAction("Sub-image (ROI)…", self._export_sub_image)
-        export_menu.addAction("ROI as region file…", self._export_region)
+        export_menu.addAction("Sub-image…", self._export_sub_image)
+        export_menu.addAction("CASA region file…", self._export_region)
         self.export_region_btn.setMenu(export_menu)
         self.export_region_btn.hide()
         row = QHBoxLayout()
@@ -889,6 +888,13 @@ class PanelsMixin:
         block_layout.addWidget(self.image_stats_table)
         layout.addWidget(block)
         layout.addStretch()
+        # The two tables' values in one column: the names take the room of
+        # the longest of either
+        tables = (self.stats_table, self.image_stats_table)
+        names = max(table.sizeHintForColumn(0) for table in tables)
+        for table in tables:
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+            table.setColumnWidth(0, names)
         return page
 
     # -------------------------------------------------------- empty canvas

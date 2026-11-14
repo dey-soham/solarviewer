@@ -132,7 +132,7 @@ class MainWindow(
     def __init__(self, theme="dark"):
         super(MainWindow, self).__init__()
         free_modal_dialogs(self)  # (its settings, browsers... move on their own)
-        self.setWindowTitle("Dynamic spectra viewer")
+        self.setWindowTitle("Dynamic spectrum viewer")
         # 1440 x 900 as the screen allows; never less than 1180 x 780
         fit_to_screen(self, 1440, 900)
         self.setMinimumSize(1180, 780)
@@ -269,50 +269,50 @@ class MainWindow(
 
     # ------------------------- Actions and Menu -------------------------------
     def _createActions(self):
-        self.openAct = QAction("&Open FITS…", self)
+        self.openAct = QAction("Open FITS…", self)
         self.openAct.setShortcut("Ctrl+O")
         self.openAct.triggered.connect(self.openFile)
 
-        self.openRemoteAct = QAction("Open from se&rver…", self)
+        self.openRemoteAct = QAction("Open from server…", self)
         self.openRemoteAct.setShortcut("Ctrl+Shift+O")
         self.openRemoteAct.setStatusTip(
             "Open a FITS file on an SSH server (read in pieces)"
         )
         self.openRemoteAct.triggered.connect(self.openRemote)
 
-        self.saveMasksAct = QAction("Save &masks…", self)
+        self.saveMasksAct = QAction("Save masks…", self)
         self.saveMasksAct.setStatusTip("Save the masks as times and frequencies")
         self.saveMasksAct.triggered.connect(self.saveMasks)
-        self.loadMasksAct = QAction("&Load masks…", self)
+        self.loadMasksAct = QAction("Load masks…", self)
         self.loadMasksAct.setStatusTip("Add masks saved before (this file or another)")
         self.loadMasksAct.triggered.connect(self.loadMasks)
 
-        self.saveRemoteAct = QAction("Save to ser&ver…", self)
+        self.saveRemoteAct = QAction("Save to server…", self)
         self.saveRemoteAct.setStatusTip("Save the cleaned data to a folder on an SSH server")
         self.saveRemoteAct.triggered.connect(self.saveCleanedToServer)
 
-        self.saveAct = QAction("&Save FITS…", self)
+        self.saveAct = QAction("Save FITS…", self)
         self.saveAct.setShortcut("Ctrl+S")
         self.saveAct.triggered.connect(self.saveCleanedData)
 
-        self.exitAct = QAction("E&xit", self)
+        self.exitAct = QAction("Exit", self)
         self.exitAct.setShortcut("Ctrl+Q")
         self.exitAct.triggered.connect(self.close)
 
-        self.compareAct = QAction("Compare &original vs cleaned", self)
+        self.compareAct = QAction("Compare original vs cleaned", self)
         self.compareAct.setShortcut("Ctrl+Shift+C")
         self.compareAct.triggered.connect(self.compareOriginalCleaned)
 
-        self.revertAct = QAction("&Revert to original", self)
+        self.revertAct = QAction("Revert to original", self)
         self.revertAct.setShortcut("Ctrl+R")
         self.revertAct.triggered.connect(self.revertToOriginal)
 
         # New Undo/Redo actions
-        self.undoAct = QAction("&Undo", self)
+        self.undoAct = QAction("Undo", self)
         self.undoAct.setShortcut("Ctrl+Z")
         self.undoAct.triggered.connect(self.undo)
 
-        self.redoAct = QAction("&Redo", self)
+        self.redoAct = QAction("Redo", self)
         self.redoAct.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         self.redoAct.triggered.connect(self.redo)
         self.undoAct.setEnabled(False)
@@ -320,7 +320,7 @@ class MainWindow(
 
         # Delete the selected mask or Keep region (selected by a click with
         # the Mask or Keep tool); typing in a box keeps its own Delete
-        self.deleteRegionAct = QAction("&Delete region", self)
+        self.deleteRegionAct = QAction("Delete region", self)
         self.deleteRegionAct.setShortcuts([QKeySequence(Qt.Key_Delete), QKeySequence(Qt.Key_Backspace)])
         self.deleteRegionAct.setStatusTip("Remove the selected mask or Keep region")
         self.deleteRegionAct.setEnabled(False)
@@ -333,12 +333,12 @@ class MainWindow(
         self.addAction(self.deselectAct)
 
         # New action for viewing metadata
-        self.rangeAct = QAction("&Time range…", self)
+        self.rangeAct = QAction("Time range…", self)
         self.rangeAct.setShortcut("Ctrl+T")
         self.rangeAct.setStatusTip("Show the data between two times")
         self.rangeAct.triggered.connect(self.showRangeControls)
 
-        self.gotoAct = QAction("&Go to time…", self)
+        self.gotoAct = QAction("Go to time…", self)
         self.gotoAct.setShortcut("Ctrl+G")
         self.gotoAct.triggered.connect(
             lambda: (self.gotoEdit.setFocus(), self.gotoEdit.selectAll())
@@ -346,33 +346,33 @@ class MainWindow(
 
         # As in SolarViewer: + and - zoom, R resets the view; [ and ] go to
         # the previous and next page (its previous and next file)
-        self.zoomInAct = QAction("Zoom &in", self)
+        self.zoomInAct = QAction("Zoom in", self)
         self.zoomInAct.setShortcuts([QKeySequence("+"), QKeySequence("="), QKeySequence.ZoomIn])
         self.zoomInAct.triggered.connect(lambda: self.canvas.zoom_by(0.8))
-        self.zoomOutAct = QAction("Zoom &out", self)
+        self.zoomOutAct = QAction("Zoom out", self)
         self.zoomOutAct.setShortcuts([QKeySequence("-"), QKeySequence.ZoomOut])
         self.zoomOutAct.triggered.connect(lambda: self.canvas.zoom_by(1.25))
-        self.resetViewAct = QAction("&Reset view", self)
+        self.resetViewAct = QAction("Reset view", self)
         self.resetViewAct.setShortcut(QKeySequence("R"))
         self.resetViewAct.triggered.connect(lambda: self.canvas.reset_view())
-        self.prevPageAct = QAction("&Previous page", self)
+        self.prevPageAct = QAction("Previous page", self)
         self.prevPageAct.setShortcut(QKeySequence("["))
         self.prevPageAct.triggered.connect(self.onPrevPage)
-        self.nextPageAct = QAction("&Next page", self)
+        self.nextPageAct = QAction("Next page", self)
         self.nextPageAct.setShortcut(QKeySequence("]"))
         self.nextPageAct.triggered.connect(self.onNextPage)
 
-        self.viewMetaAct = QAction("View &metadata", self)
+        self.viewMetaAct = QAction("View metadata…", self)
         self.viewMetaAct.triggered.connect(self.viewMetadata)
 
-        self.swapAct = QAction("S&wap time and frequency", self)
+        self.swapAct = QAction("Swap time and frequency", self)
         self.swapAct.setStatusTip(
             "Use the image's other axis as time (square images)"
         )
         self.swapAct.triggered.connect(self.swapTimeAndFrequency)
         self.swapAct.setEnabled(False)
 
-        self.overviewAct = QAction("&Overview from every sample on server files", self, checkable=True)
+        self.overviewAct = QAction("Overview from every sample on server files", self, checkable=True)
         self.overviewAct.setChecked(
             QSettings("SolarViewer", "DynamicSpectrumViewer").value("overview_remote", False, type=bool)
         )
@@ -385,7 +385,7 @@ class MainWindow(
 
         self.overviewContrastActs = []  # (action, (low, high)) of the presets
 
-        self.smoothAct = QAction("&Average samples when zoomed out", self, checkable=True)
+        self.smoothAct = QAction("Average samples when zoomed out", self, checkable=True)
         self.smoothAct.setChecked(True)
         self.smoothAct.setStatusTip(
             "Average the samples under each screen pixel"
@@ -404,7 +404,7 @@ class MainWindow(
         fileMenu = menubar.addMenu("&File")
         fileMenu.addAction(self.openAct)
         fileMenu.addAction(self.openRemoteAct)
-        self.recentMenu = fileMenu.addMenu("Open &recent")
+        self.recentMenu = fileMenu.addMenu("Open recent")
         self.recentMenu.aboutToShow.connect(self._fill_recent_menu)
         fileMenu.addSeparator()
         fileMenu.addAction(self.saveAct)
@@ -439,7 +439,7 @@ class MainWindow(
         viewMenu.addAction(self.overviewAct)
         self._build_overview_contrast_menu(viewMenu)
         # The file's other images of the spectrum's shape (e.g. LOFAR's noise)
-        self.imageMenu = viewMenu.addMenu("&Data shown")
+        self.imageMenu = viewMenu.addMenu("Data shown")
         self.imageMenu.menuAction().setStatusTip(
             "Show another image in the file (e.g. its noise, STDDEV)"
         )
@@ -454,12 +454,12 @@ class MainWindow(
     # View > Frequency axis: (setting, item, what it does)
     FREQUENCY_AXES = (
         (
-            "auto", "&Automatic",
+            "auto", "Automatic",
             "Logarithmic for a receiver whose channels crowd toward its low frequencies over "
             "more than a decade (Wind, STEREO, Parker Solar Probe, Solar Orbiter), linear otherwise",
         ),
-        ("linear", "&Linear", "The same height for every MHz"),
-        ("log", "L&ogarithmic", "The same height for every decade of frequency"),
+        ("linear", "Linear", "The same height for every MHz"),
+        ("log", "Logarithmic", "The same height for every decade of frequency"),
     )
 
     def _frequency_axis_setting(self):
@@ -471,7 +471,7 @@ class MainWindow(
         the file opened; kept for the next time."""
         from PyQt5.QtWidgets import QActionGroup
 
-        menu = viewMenu.addMenu("&Frequency axis")
+        menu = viewMenu.addMenu("Frequency axis")
         menu.setStatusTip("Frequencies along a linear or a logarithmic axis")
         group = QActionGroup(self)
         current = self._frequency_axis_setting()
@@ -893,16 +893,25 @@ class MainWindow(
         # The drift measured (Drift tool), over the cursor
         self.driftPanel = QFrame()
         self.driftPanel.setObjectName("Pinned")
-        driftLayout = QVBoxLayout(self.driftPanel)
+        # (rows of a name and a value, as the cursor's under it)
+        driftLayout = QGridLayout(self.driftPanel)
         driftLayout.setContentsMargins(14, 10, 14, 10)
-        driftLayout.setSpacing(6)
+        driftLayout.setHorizontalSpacing(12)
+        driftLayout.setVerticalSpacing(4)
         header, _aside = kicker_row("Drift", "Newkirk model")
-        driftLayout.addWidget(header)
-        self.driftLabel = QLabel()
-        self.driftLabel.setObjectName("Mono")
-        self.driftLabel.setWordWrap(True)
-        self.driftLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        driftLayout.addWidget(self.driftLabel)
+        driftLayout.addWidget(header, 0, 0, 1, 2)
+        self.driftValues = {}
+        for row, name in enumerate(("Δt", "Δf", "Drift", "Fundamental", "Harmonic"), start=1):
+            label = QLabel(name)
+            label.setObjectName("Hint")
+            label.setMinimumWidth(label.fontMetrics().horizontalAdvance("Solar XY"))
+            value = QLabel()
+            value.setObjectName("Mono")
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            driftLayout.addWidget(label, row, 0)
+            driftLayout.addWidget(value, row, 1)
+            self.driftValues[name] = value
+        driftLayout.setColumnStretch(1, 1)
         self.driftPanel.hide()
         panelLayout.addWidget(self.driftPanel)
 
@@ -1280,7 +1289,7 @@ class MainWindow(
         if changed:
             self.statusBar().showMessage(self._TOOL_HINTS[active], 8000)
         if hasattr(self, "driftPanel"):
-            self.driftPanel.setVisible(active == "drift" and bool(self.driftLabel.text()))
+            self.driftPanel.setVisible(active == "drift" and bool(self.driftValues["Drift"].text()))
         self._update_status_summary()
 
     def updateHoverInfo(self, time_str, freq_str, val):
@@ -1553,7 +1562,7 @@ class MainWindow(
         values are black and white."""
         from PyQt5.QtWidgets import QActionGroup
 
-        menu = viewMenu.addMenu("Overview &contrast")
+        menu = viewMenu.addMenu("Overview contrast")
         menu.setStatusTip("Percentiles of the overview strip's values shown as black and white")
         group = QActionGroup(self)
         current = self._overview_percentiles()
@@ -1972,9 +1981,7 @@ class MainWindow(
                 self.logger.info("Enabling ROI selector...")
                 self.canvas.enable_roi_selector(True, self._mask_roi_values)
                 self._show_keep_boxes()
-                self.statusBar().showMessage(
-                    "Mask Region ON: Click and drag to select an area to mask."
-                )
+                self.statusBar().showMessage(self._TOOL_HINTS["roi"], 8000)
                 self.logger.info("ROI selector enabled successfully")
             else:
                 self.logger.info("Disabling ROI selector...")
@@ -2088,13 +2095,12 @@ class MainWindow(
         df, rate = d["df"], d["rate"]
         span = f"{df * 1000:.3g} kHz" if abs(df) < 0.1 else f"{df:.2f} MHz"
         drift = f"{rate * 1000:.3g} kHz/s" if abs(rate) < 0.01 else f"{rate:.3f} MHz/s"
-        text = (
-            f"Δt = {d['dt']:.2f} s, Δf = {span}\n"
-            f"Drift: {drift}\n"
-            f"Fundamental: {speed(d['v_f'])}\n"
-            f"Harmonic: {speed(d['v_h'])}"
-        )
-        self.driftLabel.setText(text)
+        shown = {
+            "Δt": f"{d['dt']:.2f} s", "Δf": span, "Drift": drift,
+            "Fundamental": speed(d["v_f"]), "Harmonic": speed(d["v_h"]),
+        }
+        for name, text in shown.items():
+            self.driftValues[name].setText(text)
         self._update_tool_hint()
         self.statusBar().showMessage(f"Drift: {drift}", 10000)
 

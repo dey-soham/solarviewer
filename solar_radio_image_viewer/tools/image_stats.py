@@ -18,7 +18,8 @@ from PyQt5.QtWidgets import (
 
 from ..dialogs.form import field_label, form_block
 from ..ui.busy import busy
-from ..ui.styles import set_hand_cursor
+from ..ui.geometry import fit_width_to_text
+from ..ui.styles import SPACE_L, set_hand_cursor
 from ..ui.widgets import button_bar, dialog_layout
 
 
@@ -114,7 +115,7 @@ class ImageStatsMixin:
             (shown[1] - shown[0]) * (shown[3] - shown[2]) / (h * w)
         ) * 100
         self.image_info_label.setText(
-            f"Image: {h}x{w} px - RMS box: {rms_box_percent:.1f}%" + (f" ({note})" if note else "")
+            f"{w}×{h} px · RMS box {rms_box_percent:.1f}%" + (f" ({note})" if note else "")
         )
         if hasattr(self, "show_image_summary"):
             self.show_image_summary((h, w, rms_box_percent, dmax, drms, positive_DR))
@@ -216,6 +217,17 @@ class ImageStatsMixin:
         self.dialog_rms_y1_entry.textChanged.connect(self.update_dialog_rms_box)
         self.dialog_rms_y2_entry.textChanged.connect(self.update_dialog_rms_box)
 
+        # The fields as wide as a pixel index, the sliders taking the rest,
+        # never shrunk to a dot
+        for entry, slider in (
+            (self.dialog_rms_x1_entry, self.dialog_rms_x1_slider),
+            (self.dialog_rms_x2_entry, self.dialog_rms_x2_slider),
+            (self.dialog_rms_y1_entry, self.dialog_rms_y1_slider),
+            (self.dialog_rms_y2_entry, self.dialog_rms_y2_slider),
+        ):
+            fit_width_to_text(entry, "000000")
+            slider.setMinimumWidth(entry.width() * 2)
+
         # Add widgets to grid layout
         rms_grid.addWidget(field_label("X1"), 0, 0)
         rms_grid.addWidget(self.dialog_rms_x1_entry, 0, 1)
@@ -248,6 +260,10 @@ class ImageStatsMixin:
 
         button_box, _ = button_bar(primary=("Apply", on_apply), secondary=("Cancel", dialog.close))
         layout.addWidget(button_box)
+        # No smaller than its rows: the description wraps to their width and
+        # keeps the height it needs there, the fields their spacing
+        description.setMinimumWidth(layout.sizeHint().width() - 2 * SPACE_L)
+        dialog.setMinimumSize(dialog.sizeHint())
 
         # Show the dialog as non-modal
         dialog.setAttribute(Qt.WA_DeleteOnClose)

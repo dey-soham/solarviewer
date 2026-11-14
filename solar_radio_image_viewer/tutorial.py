@@ -716,10 +716,14 @@ class TutorialDialog(QDialog):
         # Annotations
         layout.addWidget(
             self._create_info_box(
-                "Annotations (Image → Annotate)",
+                "Annotations (the Annotate tool, A)",
                 [
-                    "Add text (Ctrl+T): Place text labels",
-                    "Add arrow (Ctrl+Shift+A): Draw arrows to features",
+                    "Text (Ctrl+T): Click on the image where it goes, and type",
+                    "Arrow (Ctrl+Shift+A), Rectangle, Ellipse: Drag on the image to draw one; Shift keeps a shape even and an arrow at 15° steps",
+                    "Change one: Click it to select it, drag it to move it, drag its handles to resize or turn it",
+                    "Double-click a text to type it again, or anything else for its properties (colour, line, size)",
+                    "Delete removes the selected one; Ctrl+Z undoes, Ctrl+Shift+Z redoes",
+                    "Solar radius circles (1 to 10 R☉) are in the tool's ⋯ menu and under Image → Annotate",
                 ],
             )
         )

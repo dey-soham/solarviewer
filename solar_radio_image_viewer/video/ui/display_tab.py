@@ -9,7 +9,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QGroupBox,
     QComboBox,
@@ -25,11 +24,13 @@ from PyQt5.QtCore import Qt
 import matplotlib.pyplot as plt
 from ...processing.colormaps import ensure_solar_colormaps
 from ...ui.background import Cancelled, run_in_background
+from ...ui.widgets import PathEdit
 from ..coordinates import COORDINATE_NAMES, COORDINATES
 from ..creator import reference_range
 from .helpers import (
     SIZE_PRESETS,
     hint,
+    same_width,
 )
 
 
@@ -54,7 +55,7 @@ class DisplayTabMixin:
         reference_layout.setContentsMargins(12, 4, 12, 4)
         reference_layout.setSpacing(8)
 
-        self.reference_image_edit = QLineEdit()
+        self.reference_image_edit = PathEdit()
         self.reference_image_edit.setReadOnly(True)  # Make it read-only
         reference_layout.addWidget(self.reference_image_edit, 1)
 
@@ -186,19 +187,24 @@ class DisplayTabMixin:
         minmax_layout.setContentsMargins(0, 0, 0, 0)
         minmax_layout.setSpacing(8)
 
-        minmax_layout.addWidget(hint("Min"))
+        # (the words between the spin boxes of Values, Percentiles and Size
+        # take one width, so the boxes line up from row to row)
+        firsts, seconds = [hint("Min"), hint("Low"), hint("Width")], [hint("Max"), hint("High"), hint("Height")]
+        same_width(*firsts)
+        same_width(*seconds)
+        minmax_layout.addWidget(firsts[0])
         self.vmin_spinbox = QDoubleSpinBox()
         self.vmin_spinbox.setRange(-1e10, 1e10)
         self.vmin_spinbox.setDecimals(2)
         self.vmin_spinbox.setValue(0)
-        minmax_layout.addWidget(self.vmin_spinbox)
+        minmax_layout.addWidget(self.vmin_spinbox, 1)
 
-        minmax_layout.addWidget(hint("Max"))
+        minmax_layout.addWidget(seconds[0])
         self.vmax_spinbox = QDoubleSpinBox()
         self.vmax_spinbox.setRange(-1e10, 1e10)
         self.vmax_spinbox.setDecimals(2)
         self.vmax_spinbox.setValue(3000)
-        minmax_layout.addWidget(self.vmax_spinbox)
+        minmax_layout.addWidget(self.vmax_spinbox, 1)
 
         range_form.addRow(hint("Values"), minmax_widget)
 
@@ -207,22 +213,22 @@ class DisplayTabMixin:
         percentile_layout = QHBoxLayout(percentile_widget)
         percentile_layout.setContentsMargins(0, 0, 0, 0)
         percentile_layout.setSpacing(8)
-        percentile_layout.addWidget(hint("Low"))
+        percentile_layout.addWidget(firsts[1])
         self.lower_percentile_spinbox = QDoubleSpinBox()
         self.lower_percentile_spinbox.setRange(0, 100)
         self.lower_percentile_spinbox.setDecimals(1)
         self.lower_percentile_spinbox.setSingleStep(0.5)
         self.lower_percentile_spinbox.setSuffix(" %")
         self.lower_percentile_spinbox.setValue(0)
-        percentile_layout.addWidget(self.lower_percentile_spinbox)
-        percentile_layout.addWidget(hint("High"))
+        percentile_layout.addWidget(self.lower_percentile_spinbox, 1)
+        percentile_layout.addWidget(seconds[1])
         self.upper_percentile_spinbox = QDoubleSpinBox()
         self.upper_percentile_spinbox.setRange(0, 100)
         self.upper_percentile_spinbox.setDecimals(1)
         self.upper_percentile_spinbox.setSingleStep(0.5)
         self.upper_percentile_spinbox.setSuffix(" %")
         self.upper_percentile_spinbox.setValue(100)
-        percentile_layout.addWidget(self.upper_percentile_spinbox)
+        percentile_layout.addWidget(self.upper_percentile_spinbox, 1)
         percentile_widget.setToolTip(
             "Auto modes scale each frame (or all frames) from this percentile\n"
             "range of the pixel values; 0–100 % is the full min–max range"
@@ -244,19 +250,19 @@ class DisplayTabMixin:
         size_layout.setContentsMargins(0, 0, 0, 0)
         size_layout.setSpacing(8)
 
-        size_layout.addWidget(hint("Width"))
+        size_layout.addWidget(firsts[2])
         self.width_spinbox = QSpinBox()
         self.width_spinbox.setRange(0, 7680)
         self.width_spinbox.setValue(0)
         self.width_spinbox.setSpecialValueText("Auto")
-        size_layout.addWidget(self.width_spinbox)
+        size_layout.addWidget(self.width_spinbox, 1)
 
-        size_layout.addWidget(hint("Height"))
+        size_layout.addWidget(seconds[2])
         self.height_spinbox = QSpinBox()
         self.height_spinbox.setRange(0, 4320)
         self.height_spinbox.setValue(0)
         self.height_spinbox.setSpecialValueText("Auto")
-        size_layout.addWidget(self.height_spinbox)
+        size_layout.addWidget(self.height_spinbox, 1)
 
         size_widget.setToolTip(
             "Frame size in pixels. Auto follows the image's shape: with both on\n"

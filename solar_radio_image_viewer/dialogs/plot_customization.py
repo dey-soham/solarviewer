@@ -3,7 +3,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLineEdit,
-    QLabel,
     QPushButton,
     QSpinBox,
     QDoubleSpinBox,
@@ -12,12 +11,16 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon, QPixmap
 
-from ..ui.widgets import button_bar, dialog_layout, link_button, segmented
-from ..ui.styles import SPACE_M, SPACE_S, set_hand_cursor, theme_manager, themed
-from .form import field_label, form_block
+from ..ui.widgets import button_bar, dialog_layout, segmented
+from ..ui.styles import SPACE_M, set_hand_cursor, theme_manager, themed
+from .form import field_label, form_block, swatch_icon
 
-SWATCH_SIZE = 20
+SWATCH_SIZE = 14
+_CHOOSE = "choose"  # the colour drop-downs' Choose… item
+# The longest row name of all three tabs, so their fields line up
+LONGEST = "Figure background"
 
 
 class PlotCustomizationDialog(QDialog):
@@ -29,7 +32,7 @@ class PlotCustomizationDialog(QDialog):
         self.setWindowTitle("Plot style")
         self.setMaximumHeight(1280)
         self.settings = settings.copy() if settings else {}
-        self._swatches = {}  # the colour rows' previews and what each shows
+        self._color_combos = {}  # the colour rows' drop-downs by setting
         self.setup_ui()
         themed(self, self._paint_swatches)
         set_hand_cursor(self)
@@ -47,7 +50,7 @@ class PlotCustomizationDialog(QDialog):
         text_layout = self._tab_layout(text_tab)
 
         # Labels Section
-        labels_layout = form_block(text_layout, "Labels", pairs=2, longest="Colorbar ticks")
+        labels_layout = form_block(text_layout, "Labels", pairs=2, longest=LONGEST)
 
         labels_layout.addWidget(field_label("X axis"), 0, 0)
         self.xlabel_edit = QLineEdit(self.settings.get("xlabel", ""))
@@ -70,7 +73,7 @@ class PlotCustomizationDialog(QDialog):
         labels_layout.addWidget(self.colorbar_label_edit, 1, 3)
 
         # Font Sizes Section (compact grid)
-        fonts_layout = form_block(text_layout, "Font sizes", pairs=2, longest="Colorbar ticks")
+        fonts_layout = form_block(text_layout, "Font sizes", pairs=2, longest=LONGEST)
 
         fonts_layout.addWidget(field_label("Axis labels"), 0, 0)
         self.axis_label_size = QSpinBox()
@@ -128,46 +131,23 @@ class PlotCustomizationDialog(QDialog):
         style_layout = self._tab_layout(style_tab)
 
         # Colors Section (compact 2-column grid)
-        colors_layout = form_block(style_layout, "Colours", pairs=2, longest="Figure background")
+        colors_layout = form_block(style_layout, "Colours", pairs=2, longest=LONGEST)
 
         # Row 0: Plot BG, Figure BG
         colors_layout.addWidget(field_label("Plot background"), 0, 0)
-        self.plot_bg_color = self.settings.get("plot_bg_color", "auto")
-        self.plot_bg_preview = self._color_row(
-            colors_layout, 0, 1, self._pick_plot_bg_color, self._set_plot_bg_auto
-        )
-        self._update_color_preview(self.plot_bg_preview, self.plot_bg_color)
-
+        colors_layout.addWidget(self._color_choice("plot_bg_color", "Plot background colour"), 0, 1)
         colors_layout.addWidget(field_label("Figure background"), 0, 2)
-        self.figure_bg_color = self.settings.get("figure_bg_color", "auto")
-        self.figure_bg_preview = self._color_row(
-            colors_layout, 0, 3, self._pick_figure_bg_color, self._set_figure_bg_auto
-        )
-        self._update_color_preview(self.figure_bg_preview, self.figure_bg_color)
+        colors_layout.addWidget(self._color_choice("figure_bg_color", "Figure background colour"), 0, 3)
 
         # Row 1: Text, Tick
         colors_layout.addWidget(field_label("Text"), 1, 0)
-        self.text_color = self.settings.get("text_color", "auto")
-        self.text_color_preview = self._color_row(
-            colors_layout, 1, 1, self._pick_text_color, self._set_text_color_auto
-        )
-        self._update_color_preview(self.text_color_preview, self.text_color)
-
+        colors_layout.addWidget(self._color_choice("text_color", "Text colour"), 1, 1)
         colors_layout.addWidget(field_label("Ticks"), 1, 2)
-        self.tick_color = self.settings.get("tick_color", "auto")
-        self.tick_color_preview = self._color_row(
-            colors_layout, 1, 3, self._pick_tick_color, self._set_tick_color_auto
-        )
-        self._update_color_preview(self.tick_color_preview, self.tick_color)
+        colors_layout.addWidget(self._color_choice("tick_color", "Tick colour"), 1, 3)
 
         # Row 2: Border color + width
         colors_layout.addWidget(field_label("Border"), 2, 0)
-        self.border_color = self.settings.get("border_color", "auto")
-        self.border_color_preview = self._color_row(
-            colors_layout, 2, 1, self._pick_border_color, self._set_border_color_auto
-        )
-        self._update_color_preview(self.border_color_preview, self.border_color)
-
+        colors_layout.addWidget(self._color_choice("border_color", "Border colour"), 2, 1)
         colors_layout.addWidget(field_label("Border width"), 2, 2)
         self.border_width = QDoubleSpinBox()
         self.border_width.setRange(0.5, 5.0)
@@ -176,7 +156,7 @@ class PlotCustomizationDialog(QDialog):
         colors_layout.addWidget(self.border_width, 2, 3)
 
         # Tick Marks Section (compact)
-        ticks_layout = form_block(style_layout, "Tick marks", pairs=2, longest="Figure background")
+        ticks_layout = form_block(style_layout, "Tick marks", pairs=2, longest=LONGEST)
 
         ticks_layout.addWidget(field_label("Direction"), 0, 0)
         self.tick_direction = QComboBox()
@@ -209,7 +189,7 @@ class PlotCustomizationDialog(QDialog):
         padding_layout = self._tab_layout(padding_tab)
 
         # Subplot Margins Section
-        margins_layout = form_block(padding_layout, "Plot margins (0 to 1)", pairs=2)
+        margins_layout = form_block(padding_layout, "Margins (fraction of the figure)", pairs=2, longest=LONGEST)
 
         # Left
         margins_layout.addWidget(field_label("Left"), 0, 0)
@@ -225,7 +205,7 @@ class PlotCustomizationDialog(QDialog):
         self.pad_right = QDoubleSpinBox()
         self.pad_right.setRange(0.5, 1.0)
         self.pad_right.setSingleStep(0.01)
-        self.pad_right.setDecimals(2)
+        self.pad_right.setDecimals(3)  # (all as Left, which needs three)
         self.pad_right.setValue(self.settings.get("pad_right", 1.0))
         margins_layout.addWidget(self.pad_right, 0, 3)
 
@@ -234,7 +214,7 @@ class PlotCustomizationDialog(QDialog):
         self.pad_top = QDoubleSpinBox()
         self.pad_top.setRange(0.5, 1.0)
         self.pad_top.setSingleStep(0.01)
-        self.pad_top.setDecimals(2)
+        self.pad_top.setDecimals(3)
         self.pad_top.setValue(self.settings.get("pad_top", 0.95))
         margins_layout.addWidget(self.pad_top, 1, 1)
 
@@ -243,34 +223,35 @@ class PlotCustomizationDialog(QDialog):
         self.pad_bottom = QDoubleSpinBox()
         self.pad_bottom.setRange(0.0, 0.5)
         self.pad_bottom.setSingleStep(0.01)
-        self.pad_bottom.setDecimals(2)
+        self.pad_bottom.setDecimals(3)
         self.pad_bottom.setValue(self.settings.get("pad_bottom", 0.08))
         margins_layout.addWidget(self.pad_bottom, 1, 3)
 
         # Wspace (width space between subplots)
-        margins_layout.addWidget(field_label("Width space"), 2, 0)
+        margins_layout.addWidget(field_label("Horizontal gap"), 2, 0)
         self.pad_wspace = QDoubleSpinBox()
         self.pad_wspace.setRange(0.0, 0.5)
         self.pad_wspace.setSingleStep(0.01)
-        self.pad_wspace.setDecimals(2)
+        self.pad_wspace.setDecimals(3)
         self.pad_wspace.setValue(self.settings.get("pad_wspace", 0.2))
-        self.pad_wspace.setToolTip("Width space between subplots")
+        self.pad_wspace.setToolTip("Width space between subplots, as a fraction of their width")
         margins_layout.addWidget(self.pad_wspace, 2, 1)
 
         # Hspace (height space between subplots)
-        margins_layout.addWidget(field_label("Height space"), 2, 2)
+        margins_layout.addWidget(field_label("Vertical gap"), 2, 2)
         self.pad_hspace = QDoubleSpinBox()
         self.pad_hspace.setRange(0.0, 0.5)
         self.pad_hspace.setSingleStep(0.01)
-        self.pad_hspace.setDecimals(2)
+        self.pad_hspace.setDecimals(3)
         self.pad_hspace.setValue(self.settings.get("pad_hspace", 0.2))
-        self.pad_hspace.setToolTip("Height space between subplots")
+        self.pad_hspace.setToolTip("Height space between subplots, as a fraction of their height")
         margins_layout.addWidget(self.pad_hspace, 2, 3)
 
         # Tight Layout Option
-        self.use_tight_layout = QCheckBox("Use tight layout")
+        self.use_tight_layout = QCheckBox("Fit margins automatically")
+        self.use_tight_layout.setObjectName("Switch")
         self.use_tight_layout.setChecked(self.settings.get("use_tight_layout", False))
-        self.use_tight_layout.setToolTip("Automatically adjust margins for best fit")
+        self.use_tight_layout.setToolTip("Automatically adjust margins for best fit (tight layout)")
         padding_layout.addWidget(self.use_tight_layout)
         padding_layout.addStretch()
 
@@ -293,40 +274,58 @@ class PlotCustomizationDialog(QDialog):
         layout.setSpacing(SPACE_M)
         return layout
 
-    def _color_row(self, grid, row, column, pick, set_auto):
-        """A colour's preview, Choose… and Auto at ``row``, ``column`` of
-        ``grid``. Returns the preview."""
-        preview = QLabel()
-        preview.setFixedSize(SWATCH_SIZE, SWATCH_SIZE)
-        preview.setAlignment(Qt.AlignCenter)
-        auto = link_button("Auto", set_auto)
-        auto.setToolTip("Follow the theme")
-        line = QHBoxLayout()
-        line.setSpacing(SPACE_S)
-        line.addWidget(preview)
-        line.addWidget(link_button("Choose…", pick))
-        line.addWidget(auto)
-        line.addStretch()
-        grid.addLayout(line, row, column)
-        return preview
+    def _color_choice(self, attr, title):
+        """A colour row's drop-down, as the other dialogs' colours: Auto,
+        the colour chosen (if any), and Choose… for another, which opens
+        the colour picker titled ``title``. What it shows is kept in
+        ``self.<attr>``."""
+        setattr(self, attr, self.settings.get(attr, "auto"))
+        combo = QComboBox()
+        self._color_combos[attr] = combo
+        combo.activated.connect(lambda index: self._color_chosen(attr, title, index))
+        self._fill_color_choice(attr)
+        return combo
 
-    def _update_color_preview(self, label, color):
-        """Update the color preview label."""
-        self._swatches[label] = color
+    def _fill_color_choice(self, attr):
+        """``attr``'s drop-down with its colour current."""
+        combo, color = self._color_combos[attr], getattr(self, attr)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Auto", "auto")
+        combo.setItemData(0, "Follow the theme", Qt.ToolTipRole)
+        if color == "transparent":
+            combo.addItem("Transparent", "transparent")
+        elif color != "auto":
+            combo.addItem(color, color)
+        combo.addItem("Choose…", _CHOOSE)
+        combo.setCurrentIndex(max(combo.findData(color), 0))
+        combo.blockSignals(False)
         self._paint_swatches(theme_manager.palette)
 
+    def _color_chosen(self, attr, title, index):
+        combo = self._color_combos[attr]
+        if combo.itemData(index) == _CHOOSE:
+            color = self._pick_color(getattr(self, attr), title)
+            if color:
+                setattr(self, attr, color)
+        else:
+            setattr(self, attr, combo.itemData(index))
+        self._fill_color_choice(attr)
+
     def _paint_swatches(self, palette):
-        """The previews: the colour itself, or A for auto and T for
-        transparent, which have none to show."""
-        for label, color in self._swatches.items():
-            plain = color in ("auto", "transparent")
-            label.setText({"auto": "A", "transparent": "T"}.get(color, ""))
-            label.setToolTip({"auto": "Auto", "transparent": "Transparent"}.get(color, color))
-            label.setStyleSheet(
-                f"QLabel {{ background-color: {palette['surface'] if plain else color};"
-                f" border: 1px solid {palette['text_faint']};"
-                f" color: {palette['text_secondary']}; }}"
-            )
+        """Each colour's swatch; an empty one for auto and transparent,
+        which have none to show, and a blank for Choose…, so the names
+        line up."""
+        blank = QPixmap(SWATCH_SIZE, SWATCH_SIZE)
+        blank.fill(Qt.transparent)
+        for combo in self._color_combos.values():
+            for index in range(combo.count()):
+                color = combo.itemData(index)
+                if color == _CHOOSE:
+                    combo.setItemIcon(index, QIcon(blank))
+                    continue
+                fill = palette["surface"] if color in ("auto", "transparent") else color
+                combo.setItemIcon(index, swatch_icon(fill, palette["text_faint"], SWATCH_SIZE))
 
     def _pick_color(self, color, title):
         """The colour chosen starting from ``color``, or None."""
@@ -350,66 +349,6 @@ class PlotCustomizationDialog(QDialog):
         if dialog.exec_() == QColorDialog.Accepted:
             return dialog.selectedColor().name()
         return None
-
-    def _pick_plot_bg_color(self):
-        """Open color picker for plot background."""
-        color = self._pick_color(self.plot_bg_color, "Plot background colour")
-        if color:
-            self.plot_bg_color = color
-            self._update_color_preview(self.plot_bg_preview, self.plot_bg_color)
-
-    def _pick_figure_bg_color(self):
-        """Open color picker for figure background."""
-        color = self._pick_color(self.figure_bg_color, "Figure background colour")
-        if color:
-            self.figure_bg_color = color
-            self._update_color_preview(self.figure_bg_preview, self.figure_bg_color)
-
-    def _set_plot_bg_auto(self):
-        """Set plot background to auto."""
-        self.plot_bg_color = "auto"
-        self._update_color_preview(self.plot_bg_preview, "auto")
-
-    def _set_figure_bg_auto(self):
-        """Set figure background to auto."""
-        self.figure_bg_color = "auto"
-        self._update_color_preview(self.figure_bg_preview, "auto")
-
-    def _pick_text_color(self):
-        """Open color picker for text color."""
-        color = self._pick_color(self.text_color, "Text colour")
-        if color:
-            self.text_color = color
-            self._update_color_preview(self.text_color_preview, self.text_color)
-
-    def _set_text_color_auto(self):
-        """Set text color to auto."""
-        self.text_color = "auto"
-        self._update_color_preview(self.text_color_preview, "auto")
-
-    def _pick_tick_color(self):
-        """Open color picker for tick color."""
-        color = self._pick_color(self.tick_color, "Tick colour")
-        if color:
-            self.tick_color = color
-            self._update_color_preview(self.tick_color_preview, self.tick_color)
-
-    def _set_tick_color_auto(self):
-        """Set tick color to auto."""
-        self.tick_color = "auto"
-        self._update_color_preview(self.tick_color_preview, "auto")
-
-    def _pick_border_color(self):
-        """Open color picker for border color."""
-        color = self._pick_color(self.border_color, "Border colour")
-        if color:
-            self.border_color = color
-            self._update_color_preview(self.border_color_preview, self.border_color)
-
-    def _set_border_color_auto(self):
-        """Set border color to auto."""
-        self.border_color = "auto"
-        self._update_color_preview(self.border_color_preview, "auto")
 
     def _scale_fonts_up(self):
         """Increase all font sizes by 1."""
@@ -438,16 +377,9 @@ class PlotCustomizationDialog(QDialog):
         self.title_size.setValue(12)
         self.colorbar_label_size.setValue(10)
         self.colorbar_tick_size.setValue(10)
-        self.plot_bg_color = "auto"
-        self.figure_bg_color = "auto"
-        self.text_color = "auto"
-        self.tick_color = "auto"
-        self.border_color = "auto"
-        self._update_color_preview(self.plot_bg_preview, "auto")
-        self._update_color_preview(self.figure_bg_preview, "auto")
-        self._update_color_preview(self.text_color_preview, "auto")
-        self._update_color_preview(self.tick_color_preview, "auto")
-        self._update_color_preview(self.border_color_preview, "auto")
+        for attr in self._color_combos:
+            setattr(self, attr, "auto")
+            self._fill_color_choice(attr)
         self.tick_direction.setCurrentIndex(self.tick_direction.findData("out"))
         self.tick_length.setValue(4)
         self.tick_width.setValue(1.0)

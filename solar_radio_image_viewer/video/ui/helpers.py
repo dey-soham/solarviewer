@@ -35,6 +35,29 @@ def hint(text):
     return label
 
 
+def same_width(*labels):
+    """Give ``labels`` the width of the widest: words between controls in
+    rows one above the other ("Min" / "Low"), so the controls line up."""
+    width = max(label.sizeHint().width() for label in labels)
+    for label in labels:
+        label.setMinimumWidth(width)
+
+
+def line_up_forms(container):
+    """Give the row names of every form in ``container`` (a tab's groups,
+    each a form of its own) one width, so their fields start at one x."""
+    from PyQt5.QtWidgets import QFormLayout
+
+    labels = []
+    for form in container.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            item = form.itemAt(row, QFormLayout.LabelRole)
+            if item is not None and item.widget() is not None:
+                labels.append(item.widget())
+    if labels:
+        same_width(*labels)
+
+
 def _format_duration(seconds):
     """'0.3 s', '45 s', '3 min', '1 h 20 min'."""
     if seconds < 10:

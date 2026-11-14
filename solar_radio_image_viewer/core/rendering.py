@@ -368,11 +368,11 @@ class RenderingMixin:
     def value_unit(self):
         """The unit of the image's values: the file's for a Stokes plane,
         none for a ratio (Vfrac, Q/I...), degrees for PANG."""
-        from ..processing.stokes import product_unit
+        from ..processing.stokes import product_unit, unit_name
 
         unit = getattr(self, "_current_bunit", "") or ""
         combo = getattr(self, "stokes_combo", None)
-        return product_unit(combo.currentText(), unit) if combo is not None else unit
+        return product_unit(combo.currentText(), unit) if combo is not None else unit_name(unit)
 
     def display_unit(self):
         """The unit of what is drawn: the image's (less the background),
@@ -669,15 +669,9 @@ class RenderingMixin:
         self._draw_solar_disk(ax, data)
 
         # Draw shape, text, and arrow annotations
-        from ..shape_annotations import (
-            draw_arrow_annotations,
-            draw_shape_annotations,
-            draw_text_annotations,
-        )
+        from ..shape_annotations import draw_annotations
 
-        draw_shape_annotations(self, ax)
-        draw_text_annotations(self, ax)
-        draw_arrow_annotations(self, ax)
+        draw_annotations(self, ax)
 
         # Draw contours if enabled
         if (
@@ -880,6 +874,7 @@ class RenderingMixin:
         """The regions and annotations where ``move`` (a marks_map) puts
         them, turned and sized as the pixels under them are. One that
         cannot be placed stays as it is."""
+        self.forget_annotation_history()
         regions = list(getattr(self, "regions", []))
         boxes = [
             ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, region.angle)

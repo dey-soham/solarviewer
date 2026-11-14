@@ -51,13 +51,15 @@ _ARROW_PAN_STEPS = {
     Qt.Key_Down: (0, -1),
 }
 # Tool key -> the canvas bar's tool it chooses: H the hand (Pan), B a box
-# (Rectangle; R resets the view), E Ellipse, L a line (the Ruler), P Profile
+# (Rectangle; R resets the view), E Ellipse, L a line (the Ruler), P Profile,
+# A Annotate
 TOOL_KEYS = {
     Qt.Key_H: "pan_action",
     Qt.Key_B: "rect_action",
     Qt.Key_E: "ellipse_action",
     Qt.Key_L: "ruler_action",
     Qt.Key_P: "profile_action",
+    Qt.Key_A: "annotate_action",
 }
 # Redraw properly once the view has been still this long, in milliseconds
 SETTLE_MS = 200
@@ -116,8 +118,12 @@ class _ImageCanvas(FigureCanvas):
 
     It acts on the view keys itself and passes every other key on to the
     window too (Matplotlib's canvas would swallow them), so the window's own
-    keys keep working while the image has focus.
+    keys keep working while the image has focus. A tool that used the key
+    sets ``key_taken``: the window does not get that one (Enter, which
+    changes the selected annotation, is the window's "redraw").
     """
+
+    key_taken = False
 
     def __init__(self, figure, view_key_handler, plot_pending=None):
         super().__init__(figure)
@@ -137,7 +143,10 @@ class _ImageCanvas(FigureCanvas):
     def keyPressEvent(self, event):
         if self._view_key_handler(event):
             return
+        self.key_taken = False
         super().keyPressEvent(event)
+        if self.key_taken:
+            return
         event.ignore()
 
 
@@ -196,6 +205,8 @@ class CanvasMixin:
 
     Host attributes/methods used:
 
+    ``annotating``, ``annotation_cursor``, ``annotation_overlays``,
+    ``annotation_picture_stale``, ``_annot_refresh``, ``init_annotations``,
     ``cursor_readout``, ``image_plot``, ``init_region_editor``, ``_is_panning``,
     ``_profile_method``, ``_profile_mode``, ``profile_action``, ``ruler_action``,
     ``_ruler_mode``, ``_ruler_start``, ``_profile_start``,
@@ -246,6 +257,8 @@ class CanvasMixin:
         self._view_preview = _ViewPreview(self.canvas)
         # The regions, over everything else on the canvas
         self._region_layer = RegionLayer(self)
+        # ...and the Annotate tool's handles (tools/annotations.py)
+        self.init_annotations()
         self._drawn_view = None
         self._preview_source = None
         self._overview_source = None
@@ -311,6 +324,9 @@ class CanvasMixin:
             self._toggle_ruler_mode(False)
             if hasattr(self, "ruler_action"):
                 self.ruler_action.setChecked(False)
+        # ...and the Annotate tool
+        if self.annotating and hasattr(self, "annotate_action"):
+            self.annotate_action.setChecked(False)
 
         # Re-init region editor if we have an axis
         if hasattr(self, "figure") and self.figure.axes:
@@ -345,16 +361,19 @@ class CanvasMixin:
             page.sharing_tool = False
 
     def take_tool(self, other):
-        """Use ``other``'s tool: Pan, Rectangle, Ellipse, the Ruler, or the
-        Profile in its way (line or radial)."""
-        if other._ruler_mode:
+        """Use ``other``'s tool: Pan, Rectangle, Ellipse, the Ruler, the
+        Profile in its way (line or radial), or Annotate."""
+        if other.annotating:
+            if not self.annotating:
+                self.annotate_action.setChecked(True)
+        elif other._ruler_mode:
             if not self._ruler_mode:
                 self.ruler_action.setChecked(True)
         elif other._profile_mode:
             self._profile_method = other._profile_method
             if not self._profile_mode:
                 self.profile_action.setChecked(True)  # (no dialog: see _toggle_profile_mode)
-        elif self.region_mode != other.region_mode or self._in_measurement_mode():
+        elif self.region_mode != other.region_mode or self._in_measurement_mode() or self.annotating:
             self.set_region_mode(other.region_mode, everywhere=False)
 
     # ------------------------------------------------------------------
@@ -577,7 +596,13 @@ class CanvasMixin:
         if hasattr(self, "show_beam_checkbox") and self.show_beam_checkbox.isChecked():
             self._update_beam_position(ax)
         self._preview_view(ax)
+        self._refresh_overlays()
+
+    def _refresh_overlays(self):
+        """The regions and the Annotate tool's handles, where the view and
+        the image put them now."""
         self._region_layer.refresh()
+        self._annot_refresh()
 
     def _preview_view(self, ax):
         """Show the new view as the last drawn picture, redrawing once it settles."""
@@ -623,10 +648,14 @@ class CanvasMixin:
             return False
 
         # Grabbing finishes any pending draw first, which updates _drawn_view;
-        # the regions stay out of the picture (they follow the view themselves)
-        self._region_layer.hide()
+        # the regions stay out of the picture (they follow the view
+        # themselves), as does what the Annotate tool shows over the canvas
+        over = [w for w in [self._region_layer] + self.annotation_overlays() if w.isVisible()]
+        for widget in over:
+            widget.hide()
         pixmap = self.canvas.grab(rect)
-        self._region_layer.show()
+        for widget in over:
+            widget.show()
         drawn = self._drawn_view
         if drawn is None or drawn[0] is not ax:
             return False
@@ -648,7 +677,7 @@ class CanvasMixin:
         self._view_preview.show_picture(
             pixmap, rect, QColor.fromRgbF(*ax.get_facecolor()), overview
         )
-        self._region_layer.refresh()
+        self._refresh_overlays()
         return True
 
     def _overview_picture(self, ax):
@@ -701,7 +730,8 @@ class CanvasMixin:
         ax = self._nav_axes()
         self._drawn_view = (ax, ax.get_xlim(), ax.get_ylim()) if ax else None
         self._view_preview.hide()
-        self._region_layer.refresh()
+        self.annotation_picture_stale()
+        self._refresh_overlays()
         self._show_zoom(ax)
         page = getattr(self, "page", None)
         if page is not None:
@@ -785,6 +815,7 @@ class CanvasMixin:
         return (
             getattr(self, "region_mode", None) == RegionMode.PAN
             and not self._in_measurement_mode()
+            and not self.annotating
         )
 
     def on_mouse_move(self, event):
@@ -803,6 +834,8 @@ class CanvasMixin:
             return
 
         cursor = self.region_cursor(event)
+        if cursor is None:
+            cursor = self.annotation_cursor(event)
         if cursor is None:
             cursor = Qt.OpenHandCursor if self._in_pan_mode() else Qt.CrossCursor
         self.canvas.setCursor(cursor)

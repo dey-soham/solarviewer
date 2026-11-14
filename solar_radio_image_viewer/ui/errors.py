@@ -20,9 +20,12 @@ def word_details_button(box):
 
 
 def show_error(parent, title, message, detail=None):
-    """A modal error dialog: ``message`` for the user, ``detail`` (an
-    exception or text) for a bug report."""
-    box = QMessageBox(QMessageBox.Critical, title, message, QMessageBox.Ok, parent)
+    """A modal error dialog: ``title`` (what failed) over ``message`` for
+    the user, ``detail`` (an exception or text) for a bug report. The title
+    is in the box as well as on its title bar, which some desktops do not
+    show."""
+    box = QMessageBox(QMessageBox.Critical, title, title, QMessageBox.Ok, parent)
+    box.setInformativeText(message)
     if detail:
         box.setDetailedText(str(detail))
         word_details_button(box)

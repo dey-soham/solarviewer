@@ -845,7 +845,8 @@ class PipelineLoggerGUI(QMainWindow):
 
         # Initialize UI
         self.setWindowTitle("Log viewer")
-        self.setMinimumSize(640, 480)
+        # (as wide as the filter row needs: its layout sets that)
+        self.setMinimumHeight(480)
         fit_to_screen(self, 1100, 750)
 
         # Create UI components
@@ -931,6 +932,10 @@ class PipelineLoggerGUI(QMainWindow):
         self.status_bar.addPermanentWidget(self.log_count_label)
 
     def _show_rows_or_note(self):
+        # (the toolbar's commands for a log's lines, while it has some)
+        for act in (self.action_export, self.action_scroll_top, self.action_scroll_bottom,
+                    self.action_prev_error, self.action_next_error):
+            act.setEnabled(bool(self.log_model.logs))
         if self.log_model.filtered_logs:
             self.log_stack.setCurrentWidget(self.log_table)
             return
@@ -958,6 +963,7 @@ class PipelineLoggerGUI(QMainWindow):
         self.action_open = action("Open…", self._open_log_file, "Open a log file (Ctrl+O)")
         self.action_export = action("Export…", self._export_logs, "Save the log as CSV (Ctrl+E)")
         self.action_refresh = action("Refresh", self._refresh_monitor, "Read the log file again (F5)")
+        self.action_refresh.setEnabled(False)  # (until a log file is open)
         self.toolbar.addSeparator()
         self.action_scroll_top = action("Top", self._scroll_to_top, "Scroll to the top (Home)")
         self.action_scroll_bottom = action("Bottom", self._scroll_to_bottom, "Scroll to the bottom (End)")
@@ -1108,8 +1114,8 @@ class PipelineLoggerGUI(QMainWindow):
         content_layout.addWidget(kicker("Features"))
         features = [
             ("Real-time monitoring", "Automatic updates as the pipeline runs"),
-            ("Filtering", "By level and source"),
-            ("Search and regular expressions", "Fast search through the log"),
+            ("Filtering", "By minimum level"),
+            ("Search and regular expressions", "In the messages and their sources"),
             ("Last lines only", "Keep the view on the latest N log entries"),
             ("Error navigation", "Jump between errors and critical logs"),
             ("Export", "Save the log to CSV for analysis elsewhere"),
@@ -1188,6 +1194,7 @@ class PipelineLoggerGUI(QMainWindow):
         # Search filter
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search in logs…")
+        self.search_input.setMinimumWidth(160)  # (room to see what is typed)
         self.search_input.textChanged.connect(self._on_search_changed)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -1375,6 +1382,7 @@ class PipelineLoggerGUI(QMainWindow):
         with self._filtering(len(entries)):
             self.log_model.set_logs(entries)
         self.log_monitor.follow(path, position)
+        self.action_refresh.setEnabled(True)
         if to_bottom or self.log_model.tail:
             self.log_table.scrollToBottom()
         self.status_bar.showMessage(done_text, 5000)

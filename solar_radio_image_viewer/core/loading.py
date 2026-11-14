@@ -126,6 +126,7 @@ class LoadingMixin:
                 item.update(values)
 
         if ratio != 1:
+            self.forget_annotation_history()  # (in the pixels there were)
             self.current_rms_box = [round(v * ratio) for v in rms_box]
             for region, box in corners:
                 region.corners = tuple(v * ratio for v in box)

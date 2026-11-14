@@ -60,6 +60,7 @@ from ..ui.geometry import fit_to_screen
 READ_TIMEOUT_S = 300
 SNR_WORKER_CHANNELS = 2000  # below this the SNR is under a second or so: not worth a worker
 PLOT_FONT_LEGEND = 8
+PLOT_MIN_HEIGHT = 360  # a 3x3 page of plots still reads at this height
 
 # (section, rows of (name, what it does), the role of the name)
 HELP = (
@@ -196,6 +197,7 @@ def snr_estimate(xx_sols, yy_sols):
 def plot_stack(canvas, note):
     """``canvas`` with ``note`` in its place until there is something to plot."""
     stack = QStackedWidget()
+    stack.setMinimumHeight(PLOT_MIN_HEIGHT)
     stack.addWidget(empty_note(note))
     stack.addWidget(canvas)
 
@@ -208,8 +210,27 @@ def plot_stack(canvas, note):
     return stack
 
 
+def source_label(empty):
+    """The path of what a tab shows, in monospace; until something is
+    loaded, ``empty`` in the muted colour."""
+    label = QLabel(empty)
+    label.setObjectName("DetailMono")
+    label.setProperty("muted", "true")
+    return label
+
+
+def show_source(label, path):
+    """``label`` (a source_label) showing the path loaded."""
+    label.setText(str(path))
+    label.setProperty("muted", "false")
+    label.style().unpolish(label)
+    label.style().polish(label)
+
+
 def controls_row(canvas_toolbar):
-    """The row under a plot, led by its toolbar (which takes the spare width)."""
+    """The row under a plot, led by its toolbar (which takes the spare width,
+    but never less than its buttons need)."""
+    canvas_toolbar.setMinimumWidth(canvas_toolbar.sizeHint().width())
     row = QHBoxLayout()
     row.setSpacing(SPACE_S)
     row.addWidget(canvas_toolbar, 1)
@@ -219,7 +240,7 @@ def controls_row(canvas_toolbar):
 class VisualizationApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bandpass and crossphase visualizer")
+        self.setWindowTitle("Calibration table visualizer")
         fit_to_screen(self, 1000, 810)
 
         # Variables for bandpass
@@ -319,7 +340,7 @@ class VisualizationApp(QMainWindow):
         from PyQt5.QtWidgets import QDialog
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Caltable visualizer help")
+        dialog.setWindowTitle("Calibration table visualizer help")
         layout = dialog_layout(dialog)
 
         about = QLabel("A tool for visualizing LOFAR calibration tables.")
@@ -380,8 +401,7 @@ class VisualizationApp(QMainWindow):
 
         # Bandpass directory selection
         dir_frame = QHBoxLayout()
-        self.dir_label = QLabel("No caltable selected")
-        self.dir_label.setObjectName("DetailMono")
+        self.dir_label = source_label("No table loaded")
         dir_frame.addWidget(self.dir_label)
 
         dir_frame.addStretch()
@@ -447,6 +467,9 @@ class VisualizationApp(QMainWindow):
         )
         self.plot_type_combo.currentIndexChanged.connect(self._on_plot_type_changed)
         control_frame.addWidget(self.plot_type_combo)
+        # (nothing to act on until a table is loaded)
+        for control in (self.plot_button, self.plot_size_menu, self.plot_type_combo):
+            control.setEnabled(False)
 
         layout.addLayout(control_frame)
 
@@ -483,8 +506,7 @@ class VisualizationApp(QMainWindow):
 
         # Crossphase file selection
         file_frame = QHBoxLayout()
-        self.file_label = QLabel("No caltable selected")
-        self.file_label.setObjectName("DetailMono")
+        self.file_label = source_label("No file loaded")
         file_frame.addWidget(self.file_label)
 
         file_frame.addStretch()
@@ -514,8 +536,7 @@ class VisualizationApp(QMainWindow):
 
         # Selfcal directory selection
         dir_frame = QHBoxLayout()
-        self.selfcal_dir_label = QLabel("No caltable selected")
-        self.selfcal_dir_label.setObjectName("DetailMono")
+        self.selfcal_dir_label = source_label("No table loaded")
         dir_frame.addWidget(self.selfcal_dir_label)
 
         dir_frame.addStretch()
@@ -541,6 +562,7 @@ class VisualizationApp(QMainWindow):
         self.selfcal_plot_button = QPushButton("Show phase")  # (amplitude comes first)
         self.selfcal_plot_button.setToolTip("Switch between amplitude and phase (T)")
         self.selfcal_plot_button.clicked.connect(self.toggle_selfcal_mode)
+        self.selfcal_plot_button.setEnabled(False)  # (until a table is loaded)
         control_frame.addWidget(self.selfcal_plot_button)
         layout.addLayout(control_frame)
 
@@ -598,13 +620,14 @@ class VisualizationApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
             return False
 
-        self.dir_label.setText(str(bandpass_table))
+        show_source(self.dir_label, bandpass_table)
         self.bandpass_directory = bandpass_table
         self.bandpass_freqs = bandpass_freqs
         self.xx_sols = xx_sols
         self.yy_sols = yy_sols
         self.num_antennas = self.xx_sols.shape[0]
         self.current_page = 0
+        self.plot_type_combo.setEnabled(True)
 
         # What the canvas shows is the last table's, whichever view it is
         self.shown_view = "Per antenna"
@@ -1034,7 +1057,8 @@ class VisualizationApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
             return False
 
-        self.selfcal_dir_label.setText(str(caltable))  # Update selfcal specific label
+        show_source(self.selfcal_dir_label, caltable)
+        self.selfcal_plot_button.setEnabled(True)
         self.selfcal_directory = caltable
         self.selfcal_xx = xx_sols
         self.selfcal_yy = yy_sols
@@ -1131,7 +1155,7 @@ class VisualizationApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
             return False
-        self.file_label.setText(str(caltable))
+        show_source(self.file_label, caltable)
         self.crossphase_file = caltable
         for name, value in fit.items():
             setattr(self, name, value)
@@ -1175,7 +1199,7 @@ def main():
 
     from ..ui.app import create_app
 
-    parser = argparse.ArgumentParser(description="Bandpass and crossphase visualizer")
+    parser = argparse.ArgumentParser(description="Calibration table visualizer")
     parser.add_argument("--theme", choices=["dark", "light"], default=None)
     args = parser.parse_args()
 

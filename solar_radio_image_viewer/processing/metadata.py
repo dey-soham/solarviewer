@@ -176,7 +176,7 @@ def get_image_metadata(imagename):
                             "Wavelength"
                         ] = f"{wavelength_m * 1000:.3f} mm"
 
-                metadata["spectral"]["Spectral System"] = header.get("SPECSYS")
+                metadata["spectral"]["Spectral system"] = header.get("SPECSYS")
 
                 # Beam info
                 if "BMAJ" in header and "BMIN" in header:
@@ -190,14 +190,14 @@ def get_image_metadata(imagename):
                         else:
                             return f'{arcsec_val:.2f}"'
 
-                    metadata["beam"]["Major Axis"] = smart_beam_format(bmaj_arcsec)
-                    metadata["beam"]["Minor Axis"] = smart_beam_format(bmin_arcsec)
+                    metadata["beam"]["Major axis"] = smart_beam_format(bmaj_arcsec)
+                    metadata["beam"]["Minor axis"] = smart_beam_format(bmin_arcsec)
                     metadata["beam"][
-                        "Beam Area"
+                        "Beam area"
                     ] = f"{np.pi * bmaj_arcsec * bmin_arcsec / (4 * np.log(2)):.2f} arcsec²"
                     if "BPA" in header:
                         metadata["beam"][
-                            "Position Angle"
+                            "Position angle"
                         ] = f"{float(header['BPA']):.1f}°"
 
                 # Image properties
@@ -240,17 +240,17 @@ def get_image_metadata(imagename):
 
                     ps1 = smart_angle_format(cdelt1_arcsec)
                     ps2 = smart_angle_format(cdelt2_arcsec)
-                    metadata["image"]["Pixel Scale"] = f"{ps1} × {ps2} /pixel"
+                    metadata["image"]["Pixel scale"] = f"{ps1} × {ps2} /pixel"
 
                     # Smart FOV formatting
                     fov1_arcsec = cdelt1_arcsec * naxis1
                     fov2_arcsec = cdelt2_arcsec * naxis2
                     fov1 = smart_angle_format(fov1_arcsec)
                     fov2 = smart_angle_format(fov2_arcsec)
-                    metadata["image"]["Field of View"] = f"{fov1} × {fov2}"
+                    metadata["image"]["Field of view"] = f"{fov1} × {fov2}"
 
                 metadata["image"][
-                    "Coordinate Type"
+                    "Coordinate type"
                 ] = f"{header.get('CTYPE1', 'N/A')}, {header.get('CTYPE2', 'N/A')}"
 
                 if "CRVAL1" in header and "CRVAL2" in header:
@@ -267,7 +267,7 @@ def get_image_metadata(imagename):
                         metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
 
                 metadata["image"]["Units"] = header.get("BUNIT")
-                metadata["image"]["Data Type"] = f"BITPIX={header.get('BITPIX', 'N/A')}"
+                metadata["image"]["Data type"] = f"BITPIX={header.get('BITPIX', 'N/A')}"
                 metadata["image"]["Equinox"] = header.get("EQUINOX")
 
                 # Processing info
@@ -276,7 +276,7 @@ def get_image_metadata(imagename):
 
                 # WSClean specific
                 if "WSCVERSI" in header:
-                    metadata["processing"]["WSClean Version"] = header.get("WSCVERSI")
+                    metadata["processing"]["WSClean version"] = header.get("WSCVERSI")
                 if "WSCWEIGH" in header:
                     metadata["processing"]["Weighting"] = header.get("WSCWEIGH")
 
@@ -333,7 +333,7 @@ def get_image_metadata(imagename):
                                 # Skip if value looks like a coordinate table entry
                                 if value.startswith("[") and "ITRF" in value:
                                     metadata["observation"][
-                                        "Telescope Position"
+                                        "Telescope position"
                                     ] = value
                                     metadata["raw_header"][key] = value
                                     continue
@@ -346,11 +346,11 @@ def get_image_metadata(imagename):
                                     metadata["observation"]["Object"] = value
                                 elif key == "Image name":
                                     # Just the filename, not the full path
-                                    metadata["observation"]["Image Name"] = (
+                                    metadata["observation"]["Image name"] = (
                                         value.split("/")[-1] if "/" in value else value
                                     )
                                 elif key == "Image type":
-                                    metadata["image"]["Image Type"] = value
+                                    metadata["image"]["Image type"] = value
                                 elif key == "Image quantity":
                                     metadata["image"]["Quantity"] = value
                                 elif key == "Image units":
@@ -359,11 +359,11 @@ def get_image_metadata(imagename):
                                     "Spectral  reference",
                                     "Spectral reference",
                                 ]:
-                                    metadata["spectral"]["Reference Frame"] = value
+                                    metadata["spectral"]["Reference frame"] = value
                                 elif key in ["Velocity  type", "Velocity type"]:
-                                    metadata["spectral"]["Velocity Type"] = value
+                                    metadata["spectral"]["Velocity type"] = value
                                 elif key in ["Direction reference"]:
-                                    metadata["image"]["Direction Reference"] = value
+                                    metadata["image"]["Direction reference"] = value
                                 elif key == "Telescope":
                                     if not metadata["observation"].get("Telescope"):
                                         metadata["observation"]["Telescope"] = value
@@ -380,7 +380,7 @@ def get_image_metadata(imagename):
                                             )
                                         )
                                 elif key == "Restoring Beam":
-                                    metadata["beam"]["Restoring Beam"] = value
+                                    metadata["beam"]["Restoring beam"] = value
                                 elif key in ["Pixel mask(s)", "Region(s)"]:
                                     if value and value != "None":
                                         metadata["processing"][key] = value
@@ -418,7 +418,7 @@ def get_image_metadata(imagename):
                             cdelt1_arcsec = abs(increment[0]) * 180 / np.pi * 3600
                             cdelt2_arcsec = abs(increment[1]) * 180 / np.pi * 3600
                         metadata["image"][
-                            "Pixel Scale"
+                            "Pixel scale"
                         ] = f"{cdelt1_arcsec:.3f} × {cdelt2_arcsec:.3f} arcsec/pixel"
                 except Exception:
                     pass
@@ -442,11 +442,11 @@ def get_image_metadata(imagename):
                     beam = ia_tool.restoringbeam()
                     if beam and "major" in beam:
                         major, minor = beam_arcsec(beam)
-                        metadata["beam"]["Major Axis"] = f"{major:.2f} arcsec"
-                        metadata["beam"]["Minor Axis"] = f"{minor:.2f} arcsec"
+                        metadata["beam"]["Major axis"] = f"{major:.2f} arcsec"
+                        metadata["beam"]["Minor axis"] = f"{minor:.2f} arcsec"
                         if "positionangle" in beam:
                             metadata["beam"][
-                                "Position Angle"
+                                "Position angle"
                             ] = f"{beam['positionangle']['value']:.1f}°"
                 except Exception:
                     pass
@@ -510,9 +510,9 @@ def get_image_metadata(imagename):
 
                     # WSClean specific keywords
                     wsclean_keys = {
-                        "WSCVERSI": "WSClean Version",
+                        "WSCVERSI": "WSClean version",
                         "WSCWEIGH": "Weighting",
-                        "WSCNWLAY": "W-Layers",
+                        "WSCNWLAY": "W-layers",
                         "WSCCHANS": "Channels",
                     }
                     for key, display_name in wsclean_keys.items():
@@ -522,7 +522,7 @@ def get_image_metadata(imagename):
                     # CASA/tclean specific keywords
                     casa_keys = {
                         "IMAGER": "Imager",
-                        "IMAGETYP": "Image Type",
+                        "IMAGETYP": "Image type",
                         "PROJECT": "Project",
                     }
                     for key, display_name in casa_keys.items():

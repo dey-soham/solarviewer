@@ -25,8 +25,8 @@ TOOLS = {
 }
 # (as the tools' own windows are titled: the small window hands over to them)
 TITLES = {
-    "dynamic_spectrum_viewer": "Dynamic spectra viewer",
-    "caltable_visualizer": "Bandpass and crossphase visualizer",
+    "dynamic_spectrum_viewer": "Dynamic spectrum viewer",
+    "caltable_visualizer": "Calibration table visualizer",
     "log_viewer": "Log viewer",
     "create_dynamic_spectra": "Create dynamic spectra",
 }

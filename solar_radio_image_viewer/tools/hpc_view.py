@@ -154,7 +154,7 @@ class HpcViewMixin:
             end_busy()
             if shown:
                 self.show_status_message(
-                    "Helioprojective view - click RA/DEC button to revert"
+                    "Showing helioprojective coordinates (Solar X/Y)"
                 )
 
         except Exception as e:
@@ -305,7 +305,7 @@ class HpcViewMixin:
 
             end_busy()
             if shown:
-                self.show_status_message("RA/DEC view - Click HPC button to revert")
+                self.show_status_message("Showing equatorial coordinates (RA/Dec)")
 
         except Exception as e:
             import traceback

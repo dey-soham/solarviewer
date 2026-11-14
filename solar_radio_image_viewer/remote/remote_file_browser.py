@@ -59,6 +59,7 @@ from .browser_parts import (
     PlacesPanel,
     casa_named,
     count_text,
+    elide_name,
     fits_named,
     header_kind,
     header_rows,
@@ -1489,7 +1490,8 @@ class RemoteFileBrowser(QDialog):
         metrics = self.open_button.fontMetrics()
 
         def named(text, name):
-            return text.format(metrics.elidedText(name, Qt.ElideMiddle, 320))
+            # (the button stays a button's width; the whole name is in Selected)
+            return text.format(elide_name(name, metrics, 220))
 
         if self.pick == "folder":
             if entry is not None and kind in FOLDERS:

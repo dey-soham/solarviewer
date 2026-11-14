@@ -18,6 +18,7 @@ currentWidget()`` is the current page's active pane.
 
 import logging
 import os
+import re
 
 from PyQt5.QtCore import (
     QAbstractAnimation,
@@ -281,10 +282,30 @@ def overlay_box(pane, name):
     return getattr(pane, f"show_{name}_checkbox")
 
 
+# The copies of an image in another unit or frame (tools/tb_mode.py,
+# tools/hpc_view.py), by their names
+_OWN_COPY = re.compile(r"solarviewer_(flux|tb|hpc|radec)_temp_")
+
+
+def is_own_copy(path):
+    """Whether ``path`` is a copy the viewer made of an image in another
+    unit or frame (K, Solar XY...), in the temporary folder."""
+    return bool(_OWN_COPY.match(os.path.basename(str(path or "").rstrip("/"))))
+
+
+def image_path(pane):
+    """The image the user opened in ``pane``, or "": not the copy of it in
+    another unit or frame that is shown after a conversion."""
+    for name in ("imagename", "_original_imagename", "_hpc_original_imagename", "_tb_original_imagename"):
+        path = getattr(pane, name, None)
+        if path and not is_own_copy(path):
+            return path
+    return getattr(pane, "imagename", None) or ""
+
+
 def pane_name(pane):
     """The file name of the image ``pane`` shows, or ""."""
-    path = getattr(pane, "imagename", None) or ""
-    return os.path.basename(path.rstrip("/"))
+    return os.path.basename(image_path(pane).rstrip("/"))
 
 
 def pane_caption(pane):
@@ -315,14 +336,34 @@ def pane_caption(pane):
     return " · ".join(words)
 
 
-class _ElidedLabel(QLabel):
-    """A label that gives way to its neighbours, eliding its text in the
-    middle; the whole text is its tooltip."""
+def pane_tags(panes):
+    """A few words for each of ``panes`` (pane -> text) that tell it from
+    the others: the parts of its caption that are not the same in all of
+    them (the time of day, in a series at one frequency). With nothing to
+    tell them by, or one image, the caption's first part."""
+    captions = {pane: pane_caption(pane).split(" · ") for pane in panes if pane_caption(pane)}
+    tags = {}
+    for pane in panes:
+        parts = captions.get(pane, [])
+        others = [other for key, other in captions.items() if key is not pane]
+        own = [
+            part
+            for index, part in enumerate(parts)
+            if any(index >= len(other) or other[index] != part for other in others)
+        ]
+        tags[pane] = " · ".join(own) or (parts[0] if parts else "")
+    return tags
 
-    def __init__(self, role, least=4, parent=None):
+
+class _ElidedLabel(QLabel):
+    """A label that gives way to its neighbours, eliding its text (in the
+    middle, or where ``mode`` says); the whole text is its tooltip."""
+
+    def __init__(self, role, least=4, parent=None, mode=Qt.ElideMiddle):
         super().__init__(parent)
         self.setObjectName(role)
         self._full = ""
+        self._mode = mode
         self._least = least  # the characters it keeps room for
         self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
 
@@ -345,9 +386,10 @@ class _ElidedLabel(QLabel):
         super().resizeEvent(event)
 
     def _elide(self):
-        self.setText(
-            self.fontMetrics().elidedText(self._full, Qt.ElideMiddle, max(0, self.width() - 2))
-        )
+        shown = self.fontMetrics().elidedText(self._full, self._mode, max(0, self.width() - 2))
+        if shown != self._full and len(shown) < 6:
+            shown = ""  # (a letter either side of "…" says nothing: "S…s")
+        self.setText(shown)
 
 
 def _repolish(widget):
@@ -619,7 +661,9 @@ class PaneFrame(QFrame):
         row.addWidget(self.badge)
         self.name = _ElidedLabel("PaneName")
         row.addWidget(self.name)
-        self.caption = _ElidedLabel("Meta", least=12)
+        # (cut at its start when the header is narrow: the time of day, at
+        # its end, is what tells a series' images apart)
+        self.caption = _ElidedLabel("Meta", least=12, mode=Qt.ElideLeft)
         row.addWidget(self.caption)
         row.addStretch()
         # Why a linked pane does not follow the image being edited
@@ -1121,6 +1165,8 @@ class ImagePage(QWidget):
         # The page's controls go into the active pane's canvas bar
         pane.page_controls_slot.addWidget(self._layout_group)
         pane.page_tools_slot.addWidget(self._sync_button)
+        for other in self.panes:
+            other.refresh_annotation_bar()  # (the Annotate tool's strip: on this pane)
         self._show_editing()
         for other, frame in self.frames.items():
             frame.set_active(other is pane)

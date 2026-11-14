@@ -750,8 +750,11 @@ class CursorValues(QFrame):
                 widget.setParent(None)
                 widget.deleteLater()
         self._cells = {}
-        from .compare import pane_caption
+        from .compare import pane_tags
 
+        # What tells each pane from the others (the same frequency beside
+        # every badge says nothing)
+        tags = pane_tags(self._page.panes)
         for index, pane in enumerate(self._page.panes):
             letter = self._page.letter(pane)
             cell = QWidget()
@@ -762,7 +765,10 @@ class CursorValues(QFrame):
             badge.setObjectName("PaneBadge")
             badge.setProperty("letter", letter)
             cell_layout.addWidget(badge)
-            caption = QLabel((pane_caption(pane).split(" · ")[0] or "")[:14])
+            tag = tags[pane]
+            if len(tag) > 14:  # (room for the value beside it: its last part, then)
+                tag = tag.split(" · ")[-1][:14]
+            caption = QLabel(tag)
             caption.setObjectName("Meta")
             cell_layout.addWidget(caption)
             cell_layout.addStretch()
