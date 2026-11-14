@@ -84,6 +84,7 @@
 *   **Busy Pill**: Anything that takes more than a moment says what it is doing in a small pill low in the window, with a count where one is known. It keeps moving even while the window is held up (X11).
 *   **Fewer Freezes**: Radial filters, exports, reprojection, fitting, table and log loading, server reads and the Helioviewer browser now work in the background, the window drawing, with a Cancel that works.
 *   **Faster Start**: The window appears before the first image loads, and separate tools open a window at once while they load.
+*   **Start-up and CASA's Data**: Once a day CASA looks for newer data of its own (its measures tables) as SolarViewer starts, and downloads them, which can take a minute. The splash screen stood still at 45% meanwhile and said only "Loading CASA tools". It now says what is happening ("Checking for newer CASA data", "Downloading CASA's measures tables · 18 MB · 0:42"), a glint runs along the bar to show the start has not hung, and a hint says how to turn the daily look off (`data_auto_update = False` and `measures_auto_update = False` in `~/.casa/config.py`). Once the window is up, the status bar and the log say what it cost and repeat how to turn it off.
 
 ### Stability
 *   **No More Crash-on-Error**: Unexpected errors no longer close the application. A crash report is still saved and a warning is shown, and the viewer keeps running.

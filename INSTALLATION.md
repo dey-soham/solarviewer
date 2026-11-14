@@ -111,7 +111,7 @@ sv --install
 
 To prevent CASA from auto-updating and to disable telemetry/crash reporting, we recommend adding the following configurations to your home directory.
 
-> **⚠️ Important**: If these configurations are not set, `solarviewer` may take a long time to load as CASA attempts to perform background updates.
+> **⚠️ Important**: If these configurations are not set, `solarviewer` may take a long time to load as CASA attempts to perform background updates. The splash screen says so while it happens ("Checking for newer CASA data", "Downloading CASA's measures tables"), and once the window is up the log (View > Log console) says how long it took. With the updates turned off, CASA's data stay as they are until `python -m casaconfig --update-all` is run.
 
 ### `~/.casa/config.py`
 Add or create this file with:

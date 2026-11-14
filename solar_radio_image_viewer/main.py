@@ -56,6 +56,9 @@ class LoaderThread(QThread):
     message = pyqtSignal(str)
     finished_loading = pyqtSignal(object)  # Returns the created window
     error = pyqtSignal(str)  # Signal for loading errors
+    # What holds a step up from outside, how far it is, and a hint; "" when
+    # it no longer does (CASA looking for newer data of its own)
+    waiting = pyqtSignal(str, str, str)
 
     def __init__(self, imagename):
         super().__init__()
@@ -65,6 +68,13 @@ class LoaderThread(QThread):
         """Say what is imported next, and how many of the steps are done."""
         self.message.emit(message)
         self.progress.emit(percent)
+
+    def _casa_told(self, event, what, megabytes):
+        """CASA asks its servers for newer data, or downloads them
+        (processing.casa_data): the splash says so while it lasts."""
+        from .processing import casa_data
+
+        self.waiting.emit(*casa_data.describe(event, what, megabytes))
 
     def run(self):
         try:
@@ -86,7 +96,14 @@ class LoaderThread(QThread):
             import matplotlib.backends.backend_qt5agg  # noqa: F401
 
             self._step("Loading CASA tools…", 45)
-            from .processing import dependencies  # noqa: F401
+            # Imported, CASA first looks for newer data of its own (once a
+            # day) and downloads them: a minute at times, of which it says
+            # nothing itself
+            from .processing import casa_data
+
+            with casa_data.told(self._casa_told):
+                from .processing import dependencies  # noqa: F401
+            self.waiting.emit("", "", "")
 
             self._step("Loading the viewer…", 60)
             from .viewer import SolarRadioImageViewerApp
@@ -264,6 +281,17 @@ Examples:
             set_main_window(win)
             show_native_crash_reports(native_crash_reports)
 
+            # What CASA's look for newer data cost this start, and how to
+            # turn it off: in the log to read at leisure
+            from .processing import casa_data
+
+            headline, advice = casa_data.start_note()
+            if headline:
+                logger.info(f"{headline}. {advice}")
+                win.statusBar().showMessage(
+                    f"{headline}. The log (View > Log console) says how to turn that off.", 30000
+                )
+
             # sunpy's solar colormaps take ~1 s to import; load them in the
             # background now that the window is up (they load on first use
             # anyway if something needs them sooner)
@@ -302,6 +330,7 @@ Examples:
 
     loader.progress.connect(on_progress)
     loader.message.connect(on_message)
+    loader.waiting.connect(splash.set_waiting)
     loader.finished_loading.connect(on_finished)
     loader.error.connect(on_failure)  # Connect the new error signal
 

@@ -6,6 +6,7 @@ from PyQt5.QtGui import (
     QBrush,
     QPen,
     QFont,
+    QFontMetricsF,
     QRadialGradient,
     QLinearGradient,
     QPainterPath,
@@ -14,10 +15,13 @@ from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
 import os
 import math
 import time
-from .ui.styles import FONT_BODY, FONT_SMALL, theme_manager
+from .ui.styles import FONT_BODY, FONT_META, FONT_SMALL, theme_manager
 
 
 FRAME_S = 0.03  # between frames of the animation
+WAIT_SHOWN_S = 2.0  # a wait that has lasted this long shows its time and its hint
+WAIT_GAP_S = 0.5  # waits that follow each other closer than this count as one
+GLINT_S = 1.6  # the glint runs along the bar once in this time, while waiting
 
 
 class ModernSplashScreen(QSplashScreen):
@@ -48,6 +52,13 @@ class ModernSplashScreen(QSplashScreen):
         self.loading_text = "Starting…"
         self._target_progress = 0  # Target progress value
         self._display_progress = 0.0  # Smoothly animated display value
+
+        # What holds a step up from outside (a download), see set_waiting
+        self._wait_reason = ""
+        self._wait_detail = ""
+        self._wait_hint = ""
+        self._wait_since = 0.0
+        self._wait_ended = float("-inf")
 
         # Animation
         self._glow_phase = 0.0
@@ -121,6 +132,49 @@ class ModernSplashScreen(QSplashScreen):
         self._target_progress = max(self._target_progress, min(100, value))
         self.update()
 
+    def set_waiting(self, reason, detail="", hint=""):
+        """Something outside holds the step up (CASA downloading its data).
+        ``reason`` shows in place of the step's message, with ``detail``
+        (how far it is); once it has lasted a while the time it has taken
+        shows too, and ``hint`` above it (why, and what can be done about
+        it). The bar, which stands still meanwhile, shows a glint running.
+        An empty ``reason`` ends it; waits that follow each other at once
+        count as one."""
+        now = time.monotonic()
+        if reason and not self._wait_reason and now - self._wait_ended > WAIT_GAP_S:
+            self._wait_since = now
+        if self._wait_reason and not reason:
+            self._wait_ended = now
+        self._wait_reason, self._wait_detail, self._wait_hint = reason, detail, hint
+        self.update()
+
+    def waited(self):
+        """Seconds the wait shown has lasted (0 with none)."""
+        return time.monotonic() - self._wait_since if self._wait_reason else 0.0
+
+    def status_text(self):
+        """The line above the bar: the step, or what holds it up, how far
+        that is and how long it has taken."""
+        if not self._wait_reason:
+            return self.loading_text
+        parts = [self._wait_detail] if self._wait_detail else []
+        waited = int(self.waited())
+        if waited >= WAIT_SHOWN_S:
+            parts.append(f"{waited // 60}:{waited % 60:02d}")
+        if not parts:
+            return self._wait_reason
+        return " · ".join([self._wait_reason.rstrip("…")] + parts)
+
+    def hint_text(self):
+        """The hint of a wait that has lasted a while ("" otherwise)."""
+        return self._wait_hint if self._wait_reason and self.waited() >= WAIT_SHOWN_S else ""
+
+    @staticmethod
+    def _whole_paths(text):
+        """``text`` to draw wrapped, with no line ending inside a path
+        (after one of its slashes)."""
+        return text.replace("/", "/\u2060")
+
     def step(self, message, value):
         """Say what the GUI thread does next, on screen before it does: no
         timer runs meanwhile, so these steps are all that moves the splash
@@ -137,6 +191,7 @@ class ModernSplashScreen(QSplashScreen):
         the window is on screen (QSplashScreen waits for that, up to a second,
         so ``widget`` must be shown first)."""
         self._pulse_timer.stop()
+        self.set_waiting("")
         self._target_progress = 100
         self._display_progress = 100
         QWidget.repaint(self)
@@ -165,6 +220,9 @@ class ModernSplashScreen(QSplashScreen):
 
         # === Text content ===
         self._draw_text(painter, rect, icon_center_y)
+
+        # === Why it waits, if it does (under the version) ===
+        self._draw_hint(painter, rect, icon_center_y + 52 + 32 + 18 + 2)
 
         # === Progress ===
         self._draw_progress(painter, rect)
@@ -317,28 +375,76 @@ class ModernSplashScreen(QSplashScreen):
             version_text,
         )
 
+    PAD_X = 24  # left and right of the status line, the bar and the hint
+    BAR_HEIGHT = 3
+    BOTTOM_PAD = 22
+
+    def _status_y(self, rect):
+        """The top of the status line."""
+        return rect.bottom() - self.BOTTOM_PAD - self.BAR_HEIGHT - 22
+
+    def hint_layout(self, rect, top):
+        """``(font, room, fits)`` to draw the hint with: the room between
+        ``top`` (under the version) and the status line, and the largest of
+        the small sizes at which the hint, wrapped, fits there."""
+        room = QRectF(
+            rect.left() + self.PAD_X, top, rect.width() - 2 * self.PAD_X, self._status_y(rect) - 5 - top
+        )
+        font = QFont("Inter", FONT_META)
+        for size in (FONT_META, FONT_META - 1):
+            font = QFont("Inter", size)
+            needed = QFontMetricsF(font).boundingRect(
+                QRectF(0, 0, room.width(), 1000),
+                Qt.AlignLeft | Qt.TextWordWrap,
+                self._whole_paths(self._wait_hint),
+            )
+            if needed.height() <= room.height():
+                return font, room, True
+        return font, room, False
+
+    def _draw_hint(self, painter, rect, top):
+        """Why the start waits and what can be done about it: small and
+        wrapped, just above the status line."""
+        hint = self.hint_text()
+        if not hint:
+            return
+        font, room, fits = self.hint_layout(rect, top)
+        painter.save()
+        painter.setClipRect(room)
+        painter.setFont(font)
+        painter.setPen(self.text_secondary)
+        # (one too long to fit keeps its beginning)
+        align = Qt.AlignBottom if fits else Qt.AlignTop
+        painter.drawText(room, Qt.AlignLeft | align | Qt.TextWordWrap, self._whole_paths(hint))
+        painter.restore()
+
     def _draw_progress(self, painter, rect):
         """Draw progress bar and status."""
-        pad_x = 24
-        bar_height = 3
-        bottom_pad = 22
+        pad_x = self.PAD_X
+        bar_height = self.BAR_HEIGHT
+        bottom_pad = self.BOTTOM_PAD
 
         # Status text
-        status_y = rect.bottom() - bottom_pad - bar_height - 22
+        status_y = self._status_y(rect)
 
         painter.setPen(self.text_secondary)
         status_font = QFont("Inter", FONT_SMALL)
         painter.setFont(status_font)
 
         text_rect = QRectF(rect.left() + pad_x, status_y, rect.width() - 2 * pad_x, 18)
-        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, self.loading_text)
+        percent = f"{int(self.progress)}%" if self.progress > 0 else ""
+        metrics = painter.fontMetrics()
+        room = text_rect.width() - (metrics.horizontalAdvance(percent) + 12 if percent else 0)
+        painter.drawText(
+            text_rect,
+            Qt.AlignLeft | Qt.AlignVCenter,
+            metrics.elidedText(self.status_text(), Qt.ElideRight, int(room)),
+        )
 
         # Percentage
-        if self.progress > 0:
+        if percent:
             painter.setPen(QColor(self.solar_gold))
-            painter.drawText(
-                text_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(self.progress)}%"
-            )
+            painter.drawText(text_rect, Qt.AlignRight | Qt.AlignVCenter, percent)
 
         # Progress track
         bar_y = rect.bottom() - bottom_pad - bar_height
@@ -366,3 +472,22 @@ class ModernSplashScreen(QSplashScreen):
 
             painter.setBrush(QBrush(fill_grad))
             painter.drawRoundedRect(fill_rect, 1.5, 1.5)
+
+        # Waiting, the bar stands still: a glint runs along it, to show the
+        # start has not hung
+        if self._wait_reason:
+            at = (time.monotonic() - self._wait_since) % GLINT_S / GLINT_S
+            width = bar_rect.width() * 0.22
+            left = bar_rect.left() - width + (bar_rect.width() + width) * at
+            edge, middle = QColor(self.text_primary), QColor(self.text_primary)
+            edge.setAlpha(0)
+            middle.setAlpha(220)
+            glint = QLinearGradient(left, 0, left + width, 0)
+            glint.setColorAt(0, edge)
+            glint.setColorAt(0.5, middle)
+            glint.setColorAt(1, edge)
+            painter.save()
+            painter.setClipRect(bar_rect)
+            painter.setBrush(QBrush(glint))
+            painter.drawRect(QRectF(left, bar_rect.top(), width, bar_height))
+            painter.restore()
