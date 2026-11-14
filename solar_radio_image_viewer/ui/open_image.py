@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QDialog, QFileDialog, QHeaderView, QListView, QTreeV
 
 from ..processing.fits_io import is_casa_image
 from .busy import busy
+from .geometry import move_alone
 
 FITS_PATTERNS = "*.fits *.fts *.fit *.FITS *.FTS *.FIT"
 IMAGE_FILTER = f"Images and dynamic spectra ({FITS_PATTERNS});;All files (*)"
@@ -38,6 +39,11 @@ class _ImageDialog(QFileDialog):
             header.setSectionResizeMode(0, QHeaderView.Stretch)
             for column in range(1, header.count()):
                 header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+
+    def setVisible(self, visible):
+        if visible:
+            move_alone(self)  # (GNOME on X11 would fasten it to the viewer)
+        super().setVisible(visible)
 
     def _on_activated(self, index):
         # A double-click; Qt's own handler, run first, has gone into the folder

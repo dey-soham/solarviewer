@@ -2,8 +2,14 @@
 Window sizes that fit the screen they open on.
 """
 
+import os
+
 from PyQt5.QtCore import QSize
 from PyQt5.QtWidgets import QApplication
+
+# Desktops whose window manager (GNOME's, and those built on it) fastens a
+# modal dialog to the window it was opened from
+_FASTENING = ("gnome", "cinnamon", "pantheon")
 
 
 def available_size(widget=None):
@@ -48,3 +54,34 @@ def fit_width_to_text(widget, sample):
 
     extra = 44 if isinstance(widget, QAbstractSpinBox) else 20  # frame, buttons
     widget.setFixedWidth(widget.fontMetrics().horizontalAdvance(sample) + extra)
+
+
+def fastens_dialogs(platform=None, env=None):
+    """Whether this desktop fastens a modal dialog to the window it was
+    opened from, so that it cannot be moved by itself: dragging it drags
+    that window (GNOME's "attach modal dialogs"). Only on X11: there Qt
+    tells the desktop that a dialog is modal; on Wayland Qt 5 does not, and
+    the dialog moves freely."""
+    if platform is None:
+        platform = QApplication.platformName()
+    if platform != "xcb":
+        return False
+    env = os.environ if env is None else env
+    desktops = (env.get("XDG_CURRENT_DESKTOP", "") + ":" + env.get("XDG_SESSION_DESKTOP", "")).lower()
+    return any(name in desktops for name in _FASTENING)
+
+
+def move_alone(dialog):
+    """Let the modal ``dialog``, about to be shown, be moved by itself
+    where the desktop would fasten it to the window it was opened from
+    (``fastens_dialogs``): X11 is told of no such window. The dialog is
+    then modal for the whole application: it stays above all its windows,
+    which take no input meanwhile, as before. Its Qt parent is kept (it
+    still opens over it). For a window worked in for a while, like a file
+    browser; call it from ``setVisible``, before the dialog shows."""
+    if not fastens_dialogs():
+        return
+    dialog.winId()  # (its window exists from here on)
+    handle = dialog.windowHandle()
+    if handle is not None and handle.transientParent() is not None:
+        handle.setTransientParent(None)

@@ -71,7 +71,7 @@ from .download_thread import DownloadThread
 from .file_cache import RemoteFileCache
 from .ssh_manager import RemoteFileInfo, SSHConnection, SSHConnectionError
 from ..ui.activity import ActivityLabel
-from ..ui.geometry import fit_to_screen
+from ..ui.geometry import fit_to_screen, move_alone
 from ..ui.styles import set_hand_cursor, theme_manager
 from ..ui.widgets import segmented
 
@@ -1006,6 +1006,13 @@ class RemoteFileBrowser(QDialog):
         self._apply_icons()
         self._refresh_details()
         self.view.viewport().update()
+
+    def setVisible(self, visible):
+        if visible:
+            # GNOME on X11 would fasten the browser to the viewer: dragging
+            # it dragged the viewer
+            move_alone(self)
+        super().setVisible(visible)
 
     def _update_title(self):
         if self.pick == "folder":
