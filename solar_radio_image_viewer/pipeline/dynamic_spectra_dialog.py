@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -46,8 +47,9 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QScrollArea,
+    QSizePolicy,
     QSpinBox,
+    QTabWidget,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -58,7 +60,7 @@ from ..remote.ssh_manager import UnknownHostKey, trust_host_key
 from ..ui.activity import Spinner, begin_activity
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import set_hand_cursor, set_tone
-from ..ui.widgets import PathEdit, button_bar, dialog_layout, kicker, link_button, rule, segmented
+from ..ui.widgets import PathEdit, button_bar, dialog_layout, kicker, link_button, segmented
 
 ENGINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_dynamic_spectra.py")
 
@@ -1259,12 +1261,13 @@ class DynamicSpectraDialog(QDialog):
         label = QLabel(text)
         label.setObjectName("Hint")
         label.setWordWrap(True)
+        label.setMinimumWidth(120)  # (it wraps; its own guess at a minimum is too wide)
         return label
 
     def _setup_ui(self):
         self.setWindowTitle("Create dynamic spectra")
         self.resize(*self._default_size())
-        self.setMinimumSize(820, 520)
+        self.setMinimumSize(820, 480)
         outer = dialog_layout(self)
 
         # --- Run on
@@ -1304,23 +1307,66 @@ class DynamicSpectraDialog(QDialog):
         self.resume_bar.setVisible(False)
         outer.addWidget(self.resume_bar)
 
-        # --- Setup area (scrolls on a small screen)
-        self.setup = QWidget()
-        cols = QHBoxLayout(self.setup)
-        cols.setContentsMargins(0, 0, 0, 0)
-        cols.setSpacing(12)
-        left = QVBoxLayout()
-        left.setSpacing(10)
-        right = QVBoxLayout()
-        right.setSpacing(10)
-        cols.addLayout(left, 1)
-        cols.addLayout(right, 1)
+        # --- Settings, in tabs; the log under them
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(False)
+        self.setup = self.tabs  # (what the run state disables: its pages, see _update_state)
+        self._pages = []
+        self._forms = []  # every label | field grid, so all the labels share one width
 
-        # Data
-        card, lay = self._card("Data")
+        def page(name):
+            """A tab: two columns of titled sections. Returns (page, left, right)."""
+            widget = QWidget()
+            cols = QHBoxLayout(widget)
+            cols.setContentsMargins(14, 12, 14, 12)
+            cols.setSpacing(28)
+            left, right = QVBoxLayout(), QVBoxLayout()
+            for col in (left, right):
+                col.setSpacing(8)
+                cols.addLayout(col, 1)
+            self.tabs.addTab(widget, name)
+            self._pages.append(widget)
+            return widget, left, right
+
+        def form(lay, ranges=False):
+            """A label | field grid; ``ranges`` adds "to" and a second
+            field (label | from | to | to)."""
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(8)
+            grid.setColumnStretch(1, 1)
+            if ranges:
+                grid.setColumnStretch(3, 1)
+            lay.addLayout(grid)
+            self._forms.append(grid)
+            return grid
+
+        def spin(lo, hi, value, decimals=1, suffix="", special=None, step=None):
+            w = QDoubleSpinBox()
+            w.setRange(lo, hi)
+            w.setDecimals(decimals)
+            w.setValue(value)
+            if suffix:
+                w.setSuffix(suffix)
+            if special:
+                w.setSpecialValueText(special)
+            if step:
+                w.setSingleStep(step)
+            w.setKeyboardTracking(False)
+            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # (may shrink to fit, as a line edit does)
+            return w
+
+        def to_label():
+            label = QLabel("to")
+            label.setAlignment(Qt.AlignCenter)
+            return label
+
+        # ---- Data: what goes in, what comes out
+        _, left, right = page("Data")
+        left.addWidget(kicker("Measurement Sets"))
         drow = QHBoxLayout()
         self.data_edit = PathEdit()
-        self.data_edit.setPlaceholderText("Measurement Sets")
+        self.data_edit.setPlaceholderText("Folder or Measurement Sets")
         self.data_edit.setToolTip("A folder of Measurement Sets, one MS, or several separated by ;")
         self.data_edit.setClearButtonEnabled(True)
         drow.addWidget(self.data_edit, 1)
@@ -1329,7 +1375,7 @@ class DynamicSpectraDialog(QDialog):
         self.act_folder = self.browse_menu.addAction("Folder of Measurement Sets…")
         self.act_files = self.browse_menu.addAction("One or more MS…")
         drow.addWidget(self.browse_btn)
-        lay.addLayout(drow)
+        left.addLayout(drow)
         self.scan_label = QLabel("Choose the data to see what it holds.")
         self.scan_label.setObjectName("Hint")
         self.scan_label.setWordWrap(True)
@@ -1338,28 +1384,27 @@ class DynamicSpectraDialog(QDialog):
         scan_row.setSpacing(6)
         scan_row.addWidget(self.scan_spinner, 0, Qt.AlignTop)
         scan_row.addWidget(self.scan_label, 1)
-        lay.addLayout(scan_row)
+        left.addLayout(scan_row)
         self.summary_grid = QGridLayout()
         self.summary_grid.setHorizontalSpacing(12)
         self.summary_grid.setVerticalSpacing(4)
         self.summary_grid.setColumnStretch(1, 1)
-        lay.addLayout(self.summary_grid)
-        left.addWidget(card)
+        left.addLayout(self.summary_grid)
+        left.addStretch()
 
-        # Output
-        card, lay = self._card("Output")
+        right.addWidget(kicker("Output"))
         orow = QHBoxLayout()
         self.output_edit = PathEdit()
         self.output_edit.setPlaceholderText("FITS file to write")
         orow.addWidget(self.output_edit, 1)
         self.output_browse_btn = QPushButton("Browse…")
         orow.addWidget(self.output_browse_btn)
-        lay.addLayout(orow)
+        right.addLayout(orow)
         self.output_where = _QuietHint()
-        lay.addWidget(self.output_where)
+        right.addWidget(self.output_where)
         self.plot_check = QCheckBox("Also save a plot (PNG)")
         self.plot_check.setChecked(True)
-        lay.addWidget(self.plot_check)
+        right.addWidget(self.plot_check)
         self.download_box = QWidget()
         dl = QVBoxLayout(self.download_box)
         dl.setContentsMargins(0, 0, 0, 0)
@@ -1374,78 +1419,80 @@ class DynamicSpectraDialog(QDialog):
         self.download_browse_btn = QPushButton("Browse…")
         drow2.addWidget(self.download_browse_btn)
         dl.addLayout(drow2)
-        lay.addWidget(self.download_box)
-        left.addWidget(card)
+        right.addWidget(self.download_box)
+        right.addStretch()
 
-        # Where it runs (server)
-        self.exec_card, lay = self._card("How to run on the server")
-        mrow = QHBoxLayout()
-        self.now_btn = QPushButton("Run now")
-        self.slurm_btn = QPushButton("Slurm job")
-        for b in (self.now_btn, self.slurm_btn):
-            b.setCheckable(True)
-        self.now_btn.setChecked(True)
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        self.mode_group.addButton(self.now_btn)
-        self.mode_group.addButton(self.slurm_btn)
-        mrow.addWidget(segmented([self.now_btn, self.slurm_btn]))
-        mrow.addStretch()
-        lay.addLayout(mrow)
-        self.mode_reason = _QuietHint()
-        self.mode_reason.setWordWrap(True)
-        lay.addWidget(self.mode_reason)
-        self.runtime_label = _QuietHint()
-        self.runtime_label.setWordWrap(True)
-        lay.addWidget(self.runtime_label)
-        left.addWidget(self.exec_card)
-        left.addStretch()
-
-        # Settings
-        card, lay = self._card("Settings")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(8)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
-        lay.addLayout(grid)
-
-        def spin(lo, hi, value, decimals=1, suffix="", special=None, step=None):
-            w = QDoubleSpinBox()
-            w.setRange(lo, hi)
-            w.setDecimals(decimals)
-            w.setValue(value)
-            if suffix:
-                w.setSuffix(suffix)
-            if special:
-                w.setSpecialValueText(special)
-            if step:
-                w.setSingleStep(step)
-            w.setKeyboardTracking(False)
-            return w
-
+        # ---- Spectrum: its pixels, and which part of the data
+        _, left, right = page("Spectrum")
+        left.addWidget(kicker("Resolution"))
+        grid = form(left)
         grid.addWidget(QLabel("Time bin"), 0, 0)
         self.binwidth_spin = spin(0.01, 3600.0, 1.0, 2, " s", step=0.5)
         grid.addWidget(self.binwidth_spin, 0, 1)
-        grid.addWidget(QLabel("Polarization"), 0, 2)
+        grid.addWidget(QLabel("Columns"), 1, 0)
+        self.freqres_combo = QComboBox()
+        for label, value in (
+            ("Auto", "auto"), ("One column per subband", "subband"),
+            ("Every channel", "channel"),
+        ):
+            self.freqres_combo.addItem(label, value)
+        grid.addWidget(self.freqres_combo, 1, 1)
+        grid.addWidget(QLabel("Average"), 2, 0)
+        self.chanavg_spin = QSpinBox()
+        self.chanavg_spin.setRange(1, 65536)
+        self.chanavg_spin.setSuffix(" channels")
+        self.chanavg_spin.setSpecialValueText("Auto")
+        grid.addWidget(self.chanavg_spin, 2, 1)
+        left.addStretch()
+
+        right.addWidget(kicker("Range (optional)"))
+        grid = form(right, ranges=True)
+        grid.addWidget(QLabel("Frequency"), 0, 0)
+        self.startfreq_spin = spin(0, 1e5, 0, 3, " MHz", special="Auto")
+        grid.addWidget(self.startfreq_spin, 0, 1)
+        grid.addWidget(to_label(), 0, 2)
+        self.endfreq_spin = spin(0, 1e5, 0, 3, " MHz", special="Auto")
+        grid.addWidget(self.endfreq_spin, 0, 3)
+        grid.addWidget(QLabel("Time (UTC)"), 1, 0)
+        self.tstart_edit = QLineEdit()
+        self.tstart_edit.setPlaceholderText("Auto")
+        grid.addWidget(self.tstart_edit, 1, 1)
+        grid.addWidget(to_label(), 1, 2)
+        self.tend_edit = QLineEdit()
+        self.tend_edit.setPlaceholderText("Auto")
+        grid.addWidget(self.tend_edit, 1, 3)
+        grid.addWidget(
+            self._hint("Auto keeps all of it; one bound alone is fine. "
+                       "Times as 2023-03-10T10:00:00 or MJD seconds."),
+            2, 1, 1, 3,
+        )
+        right.addStretch()
+
+        # ---- Visibilities: which correlations and baselines go in
+        _, left, right = page("Visibilities")
+        left.addWidget(kicker("Polarization"))
+        grid = form(left)
+        grid.addWidget(QLabel("Product"), 0, 0)
         self.pol_combo = QComboBox()
         for label, value in (
             ("Stokes I", "I"), ("XX", "XX"), ("YY", "YY"), ("XY", "XY"), ("YX", "YX"),
         ):
             self.pol_combo.addItem(label, value)
-        grid.addWidget(self.pol_combo, 0, 3)
+        grid.addWidget(self.pol_combo, 0, 1)
+        grid.addWidget(self._hint("Stokes I is the mean of the parallel hands (XX and YY)."), 1, 1)
+        left.addStretch()
 
-        grid.addWidget(QLabel("UV min"), 1, 0)
+        right.addWidget(kicker("Baselines"))
+        grid = form(right, ranges=True)
+        grid.addWidget(QLabel("UV range"), 0, 0)
         self.uvmin_spin = spin(0, 1e6, 130.0, 0, " λ", special="No limit")
-        grid.addWidget(self.uvmin_spin, 1, 1)
-        grid.addWidget(QLabel("UV max"), 1, 2)
+        grid.addWidget(self.uvmin_spin, 0, 1)
+        grid.addWidget(to_label(), 0, 2)
         self.uvmax_spin = spin(0, 1e6, 500.0, 0, " λ", special="No limit")
-        grid.addWidget(self.uvmax_spin, 1, 3)
+        grid.addWidget(self.uvmax_spin, 0, 3)
         self.uv_all_check = QCheckBox("Use all baselines (no UV cut)")
-        grid.addWidget(self.uv_all_check, 2, 0, 1, 2)
         self.autocorr_check = QCheckBox("Use only autocorrelations")
-        grid.addWidget(self.autocorr_check, 2, 2, 1, 2)
-        uvhint = self._hint("Baselines between these lengths are used; 130 to 500 λ suits LOFAR solar data.")
+        uvhint = self._hint("130 to 500 λ suits LOFAR solar data.")
         # (the why, where it is asked for)
         uvhint.setToolTip(
             "Only baselines with lengths between these limits (in wavelengths) are "
@@ -1455,84 +1502,64 @@ class DynamicSpectraDialog(QDialog):
         )
         for w in (self.uvmin_spin, self.uvmax_spin):
             w.setToolTip(uvhint.toolTip())
-        self.autocorr_check.setToolTip(
-            "Autocorrelations (an antenna with itself) are never mixed in with the "
-            "baselines; the spectrum can be made from them alone instead."
-        )
-        grid.addWidget(uvhint, 3, 0, 1, 4)
+        grid.addWidget(uvhint, 1, 1, 1, 3)
+        grid.addWidget(self.uv_all_check, 2, 1, 1, 3)
+        grid.addWidget(self.autocorr_check, 3, 1, 1, 3)
+        right.addStretch()
 
-        grid.addWidget(QLabel("Frequency"), 4, 0)
-        self.startfreq_spin = spin(0, 1e5, 0, 3, " MHz", special="Auto")
-        grid.addWidget(self.startfreq_spin, 4, 1)
-        grid.addWidget(QLabel("to"), 4, 2, Qt.AlignRight)
-        self.endfreq_spin = spin(0, 1e5, 0, 3, " MHz", special="Auto")
-        grid.addWidget(self.endfreq_spin, 4, 3)
-        grid.addWidget(QLabel("Time (UTC)"), 5, 0)
-        self.tstart_edit = QLineEdit()
-        self.tstart_edit.setPlaceholderText("Auto")
-        grid.addWidget(self.tstart_edit, 5, 1)
-        grid.addWidget(QLabel("to"), 5, 2, Qt.AlignRight)
-        self.tend_edit = QLineEdit()
-        self.tend_edit.setPlaceholderText("Auto")
-        grid.addWidget(self.tend_edit, 5, 3)
-        grid.addWidget(
-            self._hint(
-                "Frequency and time range are optional; one bound alone is fine. "
-                "Times: 2023-03-10T10:00:00 (UTC) or MJD seconds."
-            ),
-            6, 0, 1, 4,
-        )
-
-        grid.addWidget(QLabel("Columns"), 7, 0)
-        self.freqres_combo = QComboBox()
-        for label, value in (
-            ("Auto", "auto"), ("One column per subband", "subband"),
-            ("Every channel", "channel"),
-        ):
-            self.freqres_combo.addItem(label, value)
-        grid.addWidget(self.freqres_combo, 7, 1, 1, 3)
-        grid.addWidget(QLabel("Average"), 8, 0)
-        self.chanavg_spin = QSpinBox()
-        self.chanavg_spin.setRange(1, 65536)
-        self.chanavg_spin.setSuffix(" channels")
-        self.chanavg_spin.setSpecialValueText("Auto")
-        grid.addWidget(self.chanavg_spin, 8, 1)
-        grid.addWidget(QLabel("CPUs"), 8, 2)
+        # ---- Processing: how it runs; on a server also as what
+        self.processing_page, left, right = page("Processing")
+        left.addWidget(kicker("Run"))
+        grid = form(left)
+        self.now_btn = QPushButton("Run now")
+        self.slurm_btn = QPushButton("Slurm job")
+        for b in (self.now_btn, self.slurm_btn):
+            b.setCheckable(True)
+        self.now_btn.setChecked(True)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_group.addButton(self.now_btn)
+        self.mode_group.addButton(self.slurm_btn)
+        self.server_run_box = QWidget()  # (only on a server)
+        sr = QGridLayout(self.server_run_box)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setHorizontalSpacing(10)
+        sr.setVerticalSpacing(6)
+        sr.setColumnStretch(1, 1)
+        self._forms.append(sr)
+        sr.addWidget(QLabel("Run as"), 0, 0)
+        sr.addWidget(segmented([self.now_btn, self.slurm_btn]), 0, 1, Qt.AlignLeft)
+        self.mode_reason = _QuietHint()
+        self.mode_reason.setWordWrap(True)
+        sr.addWidget(self.mode_reason, 1, 1)
+        self.runtime_label = _QuietHint()
+        self.runtime_label.setWordWrap(True)
+        sr.addWidget(self.runtime_label, 2, 1)
+        grid.addWidget(self.server_run_box, 0, 0, 1, 2)
+        grid.addWidget(QLabel("CPUs"), 1, 0)
         self.ncpu_spin = QSpinBox()
         self.ncpu_spin.setRange(0, 4096)
         self.ncpu_spin.setSpecialValueText("Auto")
-        grid.addWidget(self.ncpu_spin, 8, 3)
+        grid.addWidget(self.ncpu_spin, 1, 1)
         self.cpu_hint = self._hint("")
-        grid.addWidget(self.cpu_hint, 9, 0, 1, 4)
-        right.addWidget(card)
-
-        # Advanced
-        self.adv_btn = QPushButton("Advanced")
-        self.adv_btn.setObjectName("SectionHeader")
-        self.adv_btn.setCheckable(True)
-        right.addWidget(self.adv_btn)
-        self.adv_box = QFrame()
-        self.adv_box.setObjectName("Card")
-        ag = QGridLayout(self.adv_box)
-        ag.setContentsMargins(12, 10, 12, 12)
-        ag.setHorizontalSpacing(10)
-        ag.setVerticalSpacing(8)
-        ag.setColumnStretch(1, 1)
-        ag.addWidget(QLabel("Read block per CPU"), 0, 0)
+        grid.addWidget(self.cpu_hint, 2, 1)
+        grid.addWidget(QLabel("Read block"), 3, 0)
         self.chunk_spin = QSpinBox()
         self.chunk_spin.setRange(8, 65536)
-        self.chunk_spin.setSuffix(" MB")
+        self.chunk_spin.setSuffix(" MB per CPU")
         self.chunk_spin.setValue(DEFAULT_CHUNK_MB)
-        ag.addWidget(self.chunk_spin, 0, 1)
-        self.overwrite_check = QCheckBox("Replace existing output files (FITS and PNG) without asking")
-        ag.addWidget(self.overwrite_check, 1, 0, 1, 2)
-        self.server_adv = QWidget()
-        sg = QGridLayout(self.server_adv)
-        sg.setContentsMargins(0, 0, 0, 0)
-        sg.setHorizontalSpacing(10)
-        sg.setVerticalSpacing(8)
-        sg.setColumnStretch(1, 1)
-        sg.addWidget(QLabel("Container (.sif) or python"), 0, 0)
+        grid.addWidget(self.chunk_spin, 3, 1)
+        self.overwrite_check = QCheckBox("Overwrite existing FITS and PNG files without asking")
+        grid.addWidget(self.overwrite_check, 4, 0, 1, 2)
+        left.addStretch()
+
+        self.server_adv = QWidget()  # (only on a server)
+        sv = QVBoxLayout(self.server_adv)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(8)
+        sv.addWidget(kicker("Server"))
+        sg = form(sv)
+        sg.addWidget(QLabel("Container"), 0, 0)
         self.container_edit = PathEdit()
         self.container_edit.setPlaceholderText("Auto-detected; e.g. /project/.../image.sif")
         sg.addWidget(self.container_edit, 0, 1)
@@ -1551,18 +1578,10 @@ class DynamicSpectraDialog(QDialog):
         self.time_edit = QLineEdit("04:00:00")
         self.time_edit.setPlaceholderText("HH:MM:SS")
         sg.addWidget(self.time_edit, 3, 1)
-        ag.addWidget(self.server_adv, 2, 0, 1, 2)
-        self.adv_box.setVisible(False)
-        right.addWidget(self.adv_box)
+        right.addWidget(self.server_adv)
         right.addStretch()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setWidget(self.setup)
-        outer.addWidget(scroll, 1)
-        outer.addWidget(rule())  # (where the settings go under the footer)
+        outer.addWidget(self.tabs)
 
         # --- Progress
         self.problem_label = QLabel("")
@@ -1581,15 +1600,15 @@ class DynamicSpectraDialog(QDialog):
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # paths can be copied
-        self.log_toggle = link_button("Show log")
+        self.log_toggle = link_button("Hide log")
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("Console")
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(5000)
-        self.log_view.setMinimumHeight(110)
-        self.log_view.setMaximumHeight(200)
-        self.log_view.setVisible(False)
-        outer.addWidget(self.log_view)
+        self.log_view.setMinimumHeight(90)
+        self.log_view.setPlaceholderText("The log of the run shows here.")
+        outer.addWidget(self.log_view, 1)
+        self._outer = outer
 
         box, buttons = button_bar(
             primary=("Create dynamic spectrum", self._create),
@@ -1642,7 +1661,7 @@ class DynamicSpectraDialog(QDialog):
             self.uvmin_spin, self.uvmax_spin, self.uv_all_check, self.autocorr_check,
             self.startfreq_spin, self.endfreq_spin,
             self.tstart_edit, self.tend_edit, self.freqres_combo, self.chanavg_spin,
-            self.ncpu_spin, self.adv_btn, self.chunk_spin, self.overwrite_check,
+            self.ncpu_spin, self.chunk_spin, self.overwrite_check,
             self.container_edit, self.partition_combo, self.mem_spin, self.time_edit,
             self.run_btn,
         ]
@@ -1654,6 +1673,24 @@ class DynamicSpectraDialog(QDialog):
             if not label.objectName():
                 label.setObjectName("Hint")
                 set_tone(label, None)  # (sized by the rows, so polished already)
+
+        # fields may shrink with the window (a spin box or combo box keeps its widest text by default)
+        for field in self.setup.findChildren(QAbstractSpinBox):
+            field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        for field in self.setup.findChildren(QComboBox):
+            field.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            field.setMinimumContentsLength(8)
+
+        # all the forms' labels share one width, so the fields start at one place on every tab
+        labels = [
+            g.itemAt(i).widget() for g in self._forms for i in range(g.count())
+            if isinstance(g.itemAt(i).widget(), QLabel) and g.getItemPosition(i)[1] == 0
+        ]
+        for label in labels:
+            label.ensurePolished()
+        label_w = max(label.sizeHint().width() for label in labels)
+        for g in self._forms:
+            g.setColumnMinimumWidth(0, label_w)
 
         tips = {
             self.binwidth_spin: "Width of one time pixel in the spectrum. Larger is smaller and smoother.",
@@ -1697,7 +1734,6 @@ class DynamicSpectraDialog(QDialog):
         self.freqres_combo.currentIndexChanged.connect(self._resolution_changed)
         self.chanavg_spin.valueChanged.connect(self._resolution_changed)
         self.ncpu_spin.valueChanged.connect(self._cpus_changed)
-        self.adv_btn.toggled.connect(self._toggle_advanced)
         self.log_toggle.clicked.connect(self._toggle_log)
         self.now_btn.clicked.connect(lambda: self._mode_chosen("direct"))
         self.slurm_btn.clicked.connect(lambda: self._mode_chosen("slurm"))
@@ -1707,14 +1743,13 @@ class DynamicSpectraDialog(QDialog):
         for w in (self.startfreq_spin, self.endfreq_spin, self.tstart_edit, self.tend_edit):
             sig = w.editingFinished if isinstance(w, QLineEdit) else w.valueChanged
             sig.connect(self._clear_problem)
-        self._toggle_advanced(False)
 
     # ---------------------------- settings --------------------------------
 
     def _default_size(self):
         """The first size of the window: wide enough for the settings column
         without a scrollbar, and inside the screen."""
-        width, height = 1000, 740
+        width, height = 1000, 600
         try:
             from PyQt5.QtWidgets import QApplication
 
@@ -1724,7 +1759,7 @@ class DynamicSpectraDialog(QDialog):
                 width, height = min(width, avail.width() - 40), min(height, avail.height() - 60)
         except Exception:
             pass
-        return max(width, 820), max(height, 520)
+        return max(width, 820), max(height, 480)
 
     @staticmethod
     def _num(key, default, cast=float, lo=None, hi=None):
@@ -1887,7 +1922,7 @@ class DynamicSpectraDialog(QDialog):
         self._scanning = False
         server = kind == "server"
         (self.server_btn if server else self.local_btn).setChecked(True)
-        self.exec_card.setVisible(server)
+        self.server_run_box.setVisible(server)
         self.download_box.setVisible(server)
         self.server_adv.setVisible(server)
         self.overwrite_check.setVisible(True)
@@ -2222,9 +2257,8 @@ class DynamicSpectraDialog(QDialog):
                 text += "\n" + "\n".join(f"- {f}" for f in fixes)
             self._scan_error = text
             self._set_scan_text(text, "error")
-            self.runtime_label.setText("No container found. Enter its path under Advanced.")
-            if not self.adv_btn.isChecked():
-                self.adv_btn.setChecked(True)
+            self.runtime_label.setText("No container found. Enter its path under Server.")
+            self._set_scan_text(text + "\nEnter the container's path on the Processing tab.", "error")
             self._update_state()
         elif name == "summary":
             self._scan_done(token, value)
@@ -2445,14 +2479,14 @@ class DynamicSpectraDialog(QDialog):
         self.cpu_hint.setText(text)
         self.cpu_hint.setVisible(bool(text))
 
-    def _toggle_advanced(self, on):
-        self.adv_box.setVisible(on)
-        self.adv_btn.setText(("v  " if on else ">  ") + "Advanced")
-
     def _toggle_log(self):
-        show = not self.log_view.isVisible()
+        self._show_log(not self.log_view.isVisible())
+
+    def _show_log(self, show=True):
+        """The log under the tabs; hidden, the tabs take its room."""
         self.log_view.setVisible(show)
         self.log_toggle.setText("Hide log" if show else "Show log")
+        self._outer.setStretchFactor(self.tabs, 0 if show else 1)
 
     # ---------------------------- browsing --------------------------------
 
@@ -2609,7 +2643,8 @@ class DynamicSpectraDialog(QDialog):
         self.run_btn.setEnabled(ok)
         self.run_btn.setToolTip(reason)
         busy = self._state != IDLE
-        self.setup.setEnabled(not busy)
+        for page in self._pages:  # (the tabs can still be looked through)
+            page.setEnabled(not busy)
         self.local_btn.setEnabled(not busy)
         self.server_btn.setEnabled(not busy)
         self.connect_btn.setEnabled(not busy)
@@ -2884,8 +2919,7 @@ class DynamicSpectraDialog(QDialog):
         self.progress_bar.setVisible(False)
         self._set_status(text, "error")
         self._log("ERROR: " + text)
-        self.log_view.setVisible(True)
-        self.log_toggle.setText("Hide log")
+        self._show_log(True)
 
     def _cancel_start(self, text):
         """Give up before the run exists (Stop pressed, or the output not to be replaced)."""
@@ -3504,8 +3538,7 @@ class DynamicSpectraDialog(QDialog):
         self._set_status(text, tone)
         self._log(text)
         if failed:
-            self.log_view.setVisible(True)
-            self.log_toggle.setText("Hide log")
+            self._show_log(True)
         self.open_btn.setVisible(not remote)
         self.open_btn.setEnabled(not remote)
         if not remote:
@@ -3518,8 +3551,7 @@ class DynamicSpectraDialog(QDialog):
         self._set_status(text if cancelled else "Failed. " + text, None if cancelled else "error")
         self._log(text)
         if not cancelled:
-            self.log_view.setVisible(True)
-            self.log_toggle.setText("Hide log")
+            self._show_log(True)
 
     # ---------------------------- persistence of jobs ---------------------
 
