@@ -9,7 +9,7 @@ follow it. While a base product is chosen the dropdown just says "More",
 and its list leaves out the four that have buttons.
 """
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -80,7 +80,11 @@ class _StokesCombo(QComboBox):
 
 class StokesPicker(QWidget):
     """The segmented I / Q / U / V and the dropdown. ``combo`` is the
-    QComboBox to read and set."""
+    QComboBox to read and set. ``productShown`` is emitted with the
+    product after every set of it, quiet ones included (the combo's own
+    signals are blocked while a loader sets it)."""
+
+    productShown = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -130,6 +134,7 @@ class StokesPicker(QWidget):
         for name, button in self._buttons.items():
             button.setChecked(name == text)
         self._group.setExclusive(True)
+        self.productShown.emit(text)
 
     def _follow_enabled(self):
         """A button is enabled while its item in the combo is."""

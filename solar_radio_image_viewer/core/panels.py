@@ -31,7 +31,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
-from ..processing.stokes import SUN_RADIUS_ARCMIN
+from ..processing.stokes import SUN_RADIUS_ARCMIN, uses_rms
 from ..tools.roi_stats import NO_REGION_HINT
 from ..ui.conversion_control import ConversionControl
 from ..ui.cursor_readout import CursorReadout
@@ -181,6 +181,14 @@ class PanelsMixin:
     """
 
     # ------------------------------------------------------------ top bar
+    def _follow_threshold_use(self, stokes):
+        """The threshold and the limit round the Sun, enabled only for a
+        product they act on (Lfrac, Vfrac, Q/I, U/I, U/V, PANG)."""
+        used = uses_rms(stokes)
+        for widget, tip in getattr(self, "_threshold_controls", {}).items():
+            widget.setEnabled(used)
+            widget.setToolTip(tip if used else f"Not used for {stokes}: it is shown as it is.\n\n{tip}")
+
     def create_top_bar(self):
         """The bar above the image: the file, Stokes, the threshold, the
         colormap and the stretch. Returns the widget."""
@@ -263,6 +271,14 @@ class PanelsMixin:
         layout.addWidget(limit_label)
         layout.addWidget(self.sun_limit_entry)
         layout.addWidget(vrule())
+        # Both apply to the ratios and the angle only: greyed for the rest. (Hidden,
+        # they would move the Stokes buttons under the pointer as one picks.)
+        self._threshold_controls = {
+            thresh_label: threshold_tip, self.threshold_entry: threshold_tip,
+            limit_label: limit_tip, self.sun_limit_entry: limit_tip,
+        }
+        self.stokes_picker.productShown.connect(self._follow_threshold_use)
+        self._follow_threshold_use(self.stokes_combo.currentText())
 
         # Colormap and stretch
         radio_colormaps = [
