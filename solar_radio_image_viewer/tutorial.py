@@ -155,6 +155,8 @@ _IMAGE_KEYS = (
     ("Esc", "Leave a text field, so that the keys above reach the image; deselect"),
     (("[", "]"), "Previous / next file in the folder"),
     (("{", "}"), "First / last file in the folder"),
+    (("Ctrl+Tab", "Ctrl+Shift+Tab"), "Next / previous tab"),
+    (("Ctrl+PgDown", "Ctrl+PgUp"), "Next / previous tab"),
 )
 
 _MENU_KEYS = (
@@ -325,6 +327,8 @@ SECTIONS = (
             "right end of the menu bar.",
             "{File → New tab|Ctrl+N}, or **+** after the tabs, opens a tab; {File → Close tab|Ctrl+W}, "
             "or the tab's **×**, closes it.",
+            "`Ctrl+Tab` and `Ctrl+Shift+Tab` (or `Ctrl+PgDown` and `Ctrl+PgUp`) go to the next and "
+            "the previous tab, round from the last to the first.",
             "Double-click a tab to rename it; the name lasts until another image opens in it.",
         )),
         Heading("Good to know"),

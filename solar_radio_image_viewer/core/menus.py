@@ -4,13 +4,45 @@ The main window's menu bar, and opening images from it (Open, Open Recent).
 
 import logging
 import os
-from PyQt5.QtWidgets import QAction
+
+from PyQt5.QtCore import QEvent, QObject, Qt
+from PyQt5.QtWidgets import QAction, QApplication, QWidget
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import (
     theme_manager,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def tab_step(key, modifiers):
+    """The tabs a key press moves on: 1 for Ctrl+Tab or Ctrl+PgDown, -1 for
+    Ctrl+Shift+Tab or Ctrl+PgUp, else 0. Ctrl+Shift+Tab comes as Tab or as
+    Backtab, with Shift or without, as the system sends it."""
+    if not modifiers & Qt.ControlModifier or modifiers & (Qt.AltModifier | Qt.MetaModifier):
+        return 0
+    if key == Qt.Key_Tab:
+        return -1 if modifiers & Qt.ShiftModifier else 1
+    return {Qt.Key_Backtab: -1, Qt.Key_PageDown: 1, Qt.Key_PageUp: -1}.get(key, 0)
+
+
+class TabKeys(QObject):
+    """The tab keys of ``window``, taken from its key presses before the
+    widget with the keyboard has them. Not shortcuts: a desktop matches
+    Ctrl+Shift+Tab against both Ctrl+Shift+Tab and Ctrl+Backtab, and a key
+    that matches two shortcuts is ambiguous to Qt, which then does nothing."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+
+    def eventFilter(self, receiver, event):
+        if event.type() == QEvent.KeyPress and isinstance(receiver, QWidget):
+            step = tab_step(event.key(), event.modifiers())
+            if step and receiver.window() is self._window:
+                self._window.step_tab(step)
+                return True
+        return False
 
 
 class MenusMixin:
@@ -49,6 +81,21 @@ class MenusMixin:
         self._create_download_menu(menubar)
         self._create_apps_menu(menubar)
         self._create_help_menu(menubar)
+        self._create_tab_keys()
+
+    def _create_tab_keys(self):
+        """Ctrl+Tab and Ctrl+Shift+Tab (or Ctrl+PgDown and Ctrl+PgUp) step
+        through the image tabs, from the last round to the first. The tabs
+        are a strip and a stack of pages (DocumentTabs), not a QTabWidget,
+        which would do this by itself (TabKeys)."""
+        QApplication.instance().installEventFilter(TabKeys(self))
+
+    def step_tab(self, step):
+        """Show the tab ``step`` places on (1: the next, -1: the one
+        before), round from one end to the other."""
+        count = self.tab_widget.count()
+        if count > 1:
+            self.tab_widget.setCurrentIndex((self.tab_widget.currentIndex() + step) % count)
 
     def _action(self, menu, text, slot, tip, shortcut=None):
         """Add an action to ``menu``; ``shortcut`` is a key or a list of them."""

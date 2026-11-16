@@ -225,8 +225,8 @@ class HelpMixin:
     # handle_view_key (R, 1, +, -, arrows, the tools' keys), the regions'
     # keys (roi_stats.py _on_region_key), the annotations' (annotations.py
     # _annot_key), keyPressEvent below (Space, Enter, Esc), the file
-    # navigation shortcuts ([ ] { }) and the tab bar (Ctrl+Tab); keep this
-    # list in step with them.
+    # navigation shortcuts ([ ] { }) and the window's tab keys (menus.py
+    # _create_tab_keys); keep this list in step with them.
     IMAGE_KEYS = [
         ("R", "Reset the view"),
         ("1", "Zoom to 1° × 1°"),
@@ -246,6 +246,7 @@ class HelpMixin:
         ("[  or  ]", "Previous / next file in the folder"),
         ("{  or  }", "First / last file in the folder"),
         ("Ctrl+Tab  or  Ctrl+Shift+Tab", "Next / previous tab"),
+        ("Ctrl+PgDown  or  Ctrl+PgUp", "Next / previous tab"),
     ]
 
     MOUSE_GESTURES = [
