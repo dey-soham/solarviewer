@@ -204,12 +204,21 @@ class ZScaleNorm(Normalize):
                 return float(np.min(flat)), float(np.max(flat))
             return 0, 1
 
+    def fit(self, data):
+        """Take the ZScale limits of ``data``, the image to be drawn, as the
+        range. Done before anything else uses the norm: a colorbar made
+        first would otherwise hand it its own ramp of values. Returns the
+        norm."""
+        self._zmin, self._zmax = self._compute_zscale(data)
+        self._zscale_computed = True
+        self.vmin = self._zmin
+        self.vmax = self._zmax
+        return self
+
     def __call__(self, value, clip=None):
+        # Not fitted: the first image given (an image, not a scalar)
         if not self._zscale_computed and isinstance(value, np.ndarray):
-            self._zmin, self._zmax = self._compute_zscale(value)
-            self._zscale_computed = True
-            self.vmin = self._zmin
-            self.vmax = self._zmax
+            self.fit(value)
         return super().__call__(value, clip)
 
 
@@ -224,64 +233,112 @@ class HistEqNorm(Normalize):
     Parameters
     ----------
     n_bins : int, optional
-        Number of bins for the histogram (default is 256).
+        How many steps of the image's percentiles the mapping is made of
+        (default is 256).
     """
+
+    # The most pixels it is worked out from (an even sample of a larger
+    # image), so that equalizing stays quick while the range is dragged
+    MAX_SAMPLES = 500_000
 
     def __init__(self, vmin=None, vmax=None, clip=False, n_bins=256):
         super().__init__(vmin, vmax, clip)
         self.n_bins = max(16, min(4096, n_bins))  # Clamp to reasonable range
         self._hist_eq_computed = False
+        # (edges, cdf): places in the range (0 at vmin, 1 at vmax) and the
+        # share of the image's pixels in the range below each
         self._hist_eq_map = None
 
+    def fit(self, data):
+        """Equalize on ``data``, the image to be drawn: each colour of the
+        map then goes to about as many of its pixels between vmin and vmax
+        (those below vmin take the first colour, those above the last).
+        Done before anything else uses the norm: a colorbar made first
+        would otherwise hand it its own ramp of values. Returns the norm."""
+        self._hist_eq_map = self._compute_hist_eq(data)
+        self._hist_eq_computed = True
+        return self
+
     def _compute_hist_eq(self, data):
-        """Compute histogram equalization mapping."""
+        """The (edges, cdf) mapping of ``data``, or None to stay linear."""
         try:
-            flat_data = np.asarray(data).flatten()
-            flat_data = flat_data[np.isfinite(flat_data)]
-
-            if flat_data.size == 0:
-                return np.linspace(0, 1, self.n_bins), np.linspace(0, 1, self.n_bins)
-
-            # Compute histogram and CDF
-            hist, bin_edges = np.histogram(flat_data, bins=self.n_bins)
-
-            # Avoid division by zero
-            hist_sum = hist.sum()
-            if hist_sum == 0:
-                return np.linspace(0, 1, self.n_bins), np.linspace(0, 1, self.n_bins)
-
-            cdf = hist.cumsum() / hist_sum
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-            return bin_centers, cdf
-
+            values = data
+            if np.ndim(values) == 2 and np.size(values) > self.MAX_SAMPLES:
+                # A grid over the whole image (no copy of all of it)
+                step = int(np.ceil(np.sqrt(np.size(values) / self.MAX_SAMPLES)))
+                values = values[::step, ::step]
+            sample = np.ma.asarray(values, dtype=float).filled(np.nan).ravel()
+            if sample.size > self.MAX_SAMPLES:  # (not an image)
+                sample = sample[:: sample.size // self.MAX_SAMPLES]
+            sample = sample[np.isfinite(sample)]
+            if sample.size == 0:
+                return None
+            self.autoscale_None(sample)
+            low, high = float(self.vmin), float(self.vmax)
+            if not high > low:
+                return None
+            inside = np.sort(sample[(sample >= low) & (sample <= high)])
+            if inside.size == 0:
+                return None
+            # The image's percentiles (not a histogram of bins of equal
+            # width: a radio image's noise, a few pixels wide in a range up
+            # to the Sun's brightness, would all fall in one bin), placed
+            # in the range, between its ends
+            levels = np.linspace(0.0, 1.0, self.n_bins + 1)
+            percentiles = inside[np.round(levels * (inside.size - 1)).astype(int)]
+            places = np.concatenate([[0.0], (percentiles - low) / (high - low), [1.0]])
+            levels = np.concatenate([[0.0], levels, [1.0]])
+            # One point per value: one many pixels share (a blank sky of
+            # zeros) goes to the middle of its step
+            edges, first = np.unique(places, return_index=True)
+            counts = np.diff(np.append(first, places.size))
+            cdf = np.add.reduceat(levels, first) / counts
+            # Strictly rising, so that it can be turned back
+            cdf = (cdf + 1e-6 * edges) / (1 + 1e-6)
+            return edges, cdf
         except Exception as e:
             warnings.warn(f"Histogram equalization failed: {e}")
-            return np.linspace(0, 1, self.n_bins), np.linspace(0, 1, self.n_bins)
+            return None
 
     def __call__(self, value, clip=None):
-        try:
-            if not self._hist_eq_computed and isinstance(value, np.ndarray):
-                normed = super().__call__(value, clip)
-                bin_centers, cdf = self._compute_hist_eq(normed)
-                self._hist_eq_map = (bin_centers, cdf)
-                self._hist_eq_computed = True
-                return self._apply_hist_eq(normed, bin_centers, cdf)
-            elif self._hist_eq_computed and self._hist_eq_map is not None:
-                normed = super().__call__(value, clip)
-                bin_centers, cdf = self._hist_eq_map
-                return self._apply_hist_eq(normed, bin_centers, cdf)
-            else:
-                return super().__call__(value, clip)
-        except Exception:
-            return super().__call__(value, clip)
+        # Not fitted: the first image given (an image, not a scalar)
+        if not self._hist_eq_computed and isinstance(value, np.ndarray):
+            self.fit(value)
+        normed = super().__call__(value, clip)
+        if self._hist_eq_map is None:
+            return normed
+        edges, cdf = self._hist_eq_map
+        mapped = np.interp(np.ma.getdata(normed), edges, cdf)
+        result = np.ma.array(mapped, mask=np.ma.getmask(normed))
+        return result if np.ndim(normed) else result[()]
 
-    def _apply_hist_eq(self, normed, bin_centers, cdf):
-        """Apply histogram equalization mapping."""
-        if np.isscalar(normed):
-            idx = np.abs(bin_centers - normed).argmin()
-            return cdf[idx]
-        else:
-            normed_flat = np.asarray(normed).flatten()
-            result = np.interp(normed_flat, bin_centers, cdf)
-            return result.reshape(normed.shape)
+    def inverse(self, value):
+        """The data value at each position of the colormap (0 to 1): the
+        colorbar's labels are placed with it."""
+        if self._hist_eq_map is None or not self.scaled():
+            return super().inverse(value)
+        edges, cdf = self._hist_eq_map
+        position = np.interp(np.ma.getdata(value), cdf, edges)
+        return self.vmin + position * (self.vmax - self.vmin)
+
+    def even_ticks(self, count=6):
+        """About ``count`` round values at even steps along a colorbar of
+        this norm, for its labels (round values evenly apart in the data
+        bunch where the image has few pixels, one over the other), or
+        None before it is fitted."""
+        if self._hist_eq_map is None or not self.scaled():
+            return None
+        low, high = sorted((float(self.vmin), float(self.vmax)))
+        ticks = []
+        for place in np.linspace(0, 1, max(2, count)):
+            value = float(self.inverse(place))
+            # Two figures if that stays within the range, else more
+            for figures in (2, 3, 6):
+                rounded = float(f"{value:.{figures}g}")
+                if low <= rounded <= high:
+                    break
+            else:
+                rounded = value
+            if not ticks or rounded > ticks[-1]:
+                ticks.append(rounded)
+        return ticks

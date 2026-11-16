@@ -100,9 +100,9 @@ AUTO_RANGES = {
     ),
     "p01_999": AutoRange(
         "Auto percentile (0.1%,99.9%)",
-        "Set display range to 0.1st and 99.9th percentiles",
-        "Set display range to 0.1st and 99.9th percentiles: "
-        "[{vmin:.4g}, {vmax:.4g}]",
+        "Set display range to the 0.1 and 99.9 percentiles",
+        "Set display range to 0.1-99.9 percentile: [{vmin:.4g}, {vmax:.4g}]",
+        "F7",
     ),
     "p5_95": AutoRange(
         "Auto percentile (5%,95%)",
@@ -113,7 +113,6 @@ AUTO_RANGES = {
         "Auto median ± 3×RMS",
         "Set display range to median ± 3×RMS",
         "Set display range to median±3×RMS: [{vmin:.4g}, {vmax:.4g}]",
-        "F7",
     ),
 }
 

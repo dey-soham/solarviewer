@@ -230,9 +230,16 @@ def apply_plot_settings(ax, cb, ps, figure, dark=False, bunit=None, on_error=Non
 def drop_outside_ticks(cbar, vmin, vmax):
     """Keep only the colorbar ticks within [vmin, vmax]. A non-linear norm
     clips values outside its range to the ends, so Matplotlib would draw
-    those ticks' labels squeezed at the ends of the colorbar."""
-    low, high = min(vmin, vmax), max(vmin, vmax)
+    those ticks' labels squeezed at the ends of the colorbar. A histogram
+    equalized colorbar gets its ticks at even steps along it instead: its
+    round values bunch at one end, one label over the other."""
     axis = cbar.ax.xaxis if cbar.orientation == "horizontal" else cbar.ax.yaxis
+    even = getattr(cbar.norm, "even_ticks", None)
+    ticks = even() if callable(even) else None
+    if ticks and len(ticks) >= 2:
+        axis.set_ticks(ticks)
+        return
+    low, high = min(vmin, vmax), max(vmin, vmax)
     valid = [t for t in axis.get_ticklocs() if low <= t <= high]
     if len(valid) >= 2:
         axis.set_ticks(valid)

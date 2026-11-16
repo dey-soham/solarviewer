@@ -9,13 +9,15 @@ the rest neutral, and the two range markers, which drag. Dragging emits
 and no more: it widens as a marker is pushed past its edge, and narrows
 again once the range comes back. A double click asks for the range of
 the whole image (``fitRequested``). It is drawn as one whole canvas
-(never blitted in parts), so it is right at any display scale.
+(never blitted in parts), so it is right at any display scale. Greyed
+(a stretch that finds its own range), it shows the values without the
+range: no markers, every bar in the neutral tone.
 """
 
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QCursor, QPalette
 from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
@@ -213,9 +215,17 @@ class LevelsHistogram(QWidget):
         for marker, value in zip(self._markers, (self._vmin, self._vmax)):
             marker.set_xdata([value, value])
         inside = (self._centres >= self._vmin) & (self._centres <= self._vmax)
+        inside &= self.isEnabled()
+        for marker in self._markers:
+            marker.set_visible(self.isEnabled())
         for bar, within in zip(self._bars, inside):
             bar.set_color(palette["highlight_soft"] if within else palette["hist_out"])
         self.canvas.draw_idle()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.EnabledChange:
+            self._place_markers()
+        super().changeEvent(event)
 
     # ------------------------------------------------------------- dragging
     def _nearest_marker(self, event):

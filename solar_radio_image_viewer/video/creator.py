@@ -309,8 +309,17 @@ def frame_size(options, data_shape):
     return (max(2, int(round(width / 2)) * 2), max(2, int(round(height / 2)) * 2))
 
 
-def get_norm(stretch_type, vmin, vmax, gamma=1.0):
-    """Create a normalization object based on the stretch type"""
+def get_norm(stretch_type, vmin, vmax, gamma=1.0, data=None):
+    """Create a normalization object based on the stretch type. ZScale and
+    histogram equalization are fitted to ``data``, the frame to be drawn,
+    when it is given (before its colorbar is made)."""
+    norm = _new_norm(stretch_type, vmin, vmax, gamma)
+    if data is not None and hasattr(norm, "fit"):
+        norm.fit(data)
+    return norm
+
+
+def _new_norm(stretch_type, vmin, vmax, gamma=1.0):
     stretch_type = stretch_type.lower()
 
     if stretch_type == "linear":
@@ -523,7 +532,7 @@ def process_image(
         # Create normalization
         stretch = options.get("stretch", "linear")
         gamma = options.get("gamma", 1.0)
-        norm = get_norm(stretch, vmin, vmax, gamma)
+        norm = get_norm(stretch, vmin, vmax, gamma, data)
 
         # Display the image
         cmap = options.get("colormap", "viridis")

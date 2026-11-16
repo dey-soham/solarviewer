@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 RANGE_PRESETS = (
     ("Auto", "minmax", "The image's minimum to its maximum (F5)"),
     ("1–99%", "p1_99", "The 1st to the 99th percentile (F6)"),
-    ("Med±3σ", "median_rms", "The median, three times the RMS either side (F7)"),
+    ("0.1–99.9%", "p01_999", "The 0.1 to the 99.9 percentile (F7)"),
 )
 
 
@@ -582,11 +582,13 @@ class PanelsMixin:
         self.vmin_entry.editingFinished.connect(self._on_range_typed)
         self.vmax_entry = QLineEdit("1.0")
         self.vmax_entry.editingFinished.connect(self._on_range_typed)
+        range_labels = []
         for column, (name, entry) in enumerate((("Min", self.vmin_entry), ("Max", self.vmax_entry))):
             label = QLabel(name)
             label.setObjectName("Meta")
             fields.addWidget(label, 0, column)
             fields.addWidget(entry, 1, column)
+            range_labels.append(label)
         layout.addLayout(fields)
 
         # Gamma
@@ -666,8 +668,16 @@ class PanelsMixin:
             button.clicked.connect(lambda _=False, m=mode: self.apply_auto_range(m))
             self._preset_group.addButton(button)
             buttons.append(button)
-        self.auto_minmax_button, self.auto_percentile_button, self.auto_median_button = buttons
+        self.auto_minmax_button, self.auto_percentile_button, self.auto_wide_percentile_button = buttons
         layout.addWidget(segmented(buttons, stretch=True))
+
+        # What sets the range, greyed for a stretch that finds its own
+        # (zscale): update_gamma_slider_state, with their tooltips
+        self._range_controls = {
+            widget: widget.toolTip()
+            for widget in (*range_labels, self.vmin_entry, self.vmax_entry, self.levels.canvas, *buttons)
+        }
+        self._range_controls[self.levels] = ""
 
         # The display kept for the images that follow, and back to how
         # this one opened

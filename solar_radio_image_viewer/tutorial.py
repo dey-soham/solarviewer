@@ -173,7 +173,7 @@ _MENU_KEYS = (
     ("Ctrl+M", "{Image → Image metadata…}"),
     ("F5", "{Image → Display presets → Auto min/max}"),
     ("F6", "{Image → Display presets → Auto percentile (1%,99%)}"),
-    ("F7", "{Image → Display presets → Auto median ± 3×RMS}"),
+    ("F7", "{Image → Display presets → Auto percentile (0.1%,99.9%)}"),
     ("F8", "{Image → Display presets → AIA presets → 171 Å}"),
     ("F9", "{Image → Display presets → HMI preset}"),
     ("Ctrl+T", "{Image → Annotate → Text}"),
@@ -247,7 +247,7 @@ SECTIONS = (
                  "File → Open image…"),
             "Find your way: the image is in the middle; how it is shown is set in the top bar above it "
             "and in the inspector at the right. [[main-window]] names every part.",
-            "Set the levels: in the inspector's **Display** tab press **Auto**, **1–99%** or **Med±3σ** "
+            "Set the levels: in the inspector's **Display** tab press **Auto**, **1–99%** or **0.1–99.9%** "
             "(`F5`, `F6`, `F7`), or drag the two markers on the histogram. Pick a colormap and a "
             "stretch in the top bar. More in [[display]].",
             "Look closer: scroll over the image to zoom at the pointer, drag with the middle button to "
@@ -347,8 +347,12 @@ SECTIONS = (
             "in _r) too.",
             "The stretch list sets how the values between **Min** and **Max** become colours: "
             "**linear**, **sqrt** and **log** bring out fainter and fainter emission, **arcsinh** is "
-            "like log for negative values too, and **power** follows **Gamma**. The list also has "
-            "**zscale** and **histeq**.",
+            "like log for negative values too, and **power** follows **Gamma**.",
+            "**zscale** finds its own range in the image, as DS9's ZScale does (**Min**, **Max**, "
+            "the histogram's markers and **Auto**, **1–99%** and **0.1–99.9%** are greyed while it "
+            "is on): the faint emission around a bright Sun shows, the Sun itself is saturated. **histeq** gives each colour about as many of the pixels between **Min** "
+            "and **Max**, so the most common values (the noise, the faint emission) get most of "
+            "the colours; its colorbar is labelled at even steps.",
             "**Gamma** (the slider and box under **Min** and **Max**) is used by the **power** "
             "stretch only: below 1 it brings out faint emission, above 1 the bright sources.",
         )),
@@ -358,12 +362,12 @@ SECTIONS = (
             "`Enter`, or drag the markers on the histogram above them. Double-click the histogram "
             "for the image's whole range.",
             "**Auto** (`F5`) is the image's minimum to its maximum, **1–99%** (`F6`) the 1st to the "
-            "99th percentile, and **Med±3σ** (`F7`) the median and three times the spread of the "
-            "whole image about it, either side. That spread is not the RMS of the RMS box: on a "
-            "radio image with a bright Sun the range is wide. The button outlined is the one that "
-            "set the range.",
-            "{Image → Display presets} has these too, and **Auto percentile (0.1%,99.9%)** and "
-            "**Auto percentile (5%,95%)**.",
+            "99th percentile, and **0.1–99.9%** (`F7`) the 0.1 to the 99.9 percentile: wider, it keeps "
+            "more of a bright source without letting one hot pixel set the range. The button "
+            "outlined is the one that set the range.",
+            "{Image → Display presets} has these too, and **Auto percentile (5%,95%)** and "
+            "**Auto median ± 3×RMS** (the median and three times the spread of the whole image "
+            "about it, either side: not the RMS of the RMS box).",
             "**Keep for next images** shows the next images (`[`, `]`) with the same range, stretch, "
             "gamma, colormap and radial filter, for a time series; without it each new image starts "
             "from its minimum and maximum, or its instrument's preset. An image in another unit or "
@@ -1560,7 +1564,7 @@ class MainWindowFigure(QWidget):
         self._box(painter, (714, 336, 88, 16), None, accent, 4)
         self._text(painter, scale, 758, 344, "Auto", text, 11, align=Qt.AlignHCenter)
         self._text(painter, scale, 850, 344, "1–99%", dim, 11, align=Qt.AlignHCenter)
-        self._text(painter, scale, 942, 344, "Med±3σ", dim, 11, align=Qt.AlignHCenter)
+        self._text(painter, scale, 942, 344, "0.1–99.9%", dim, 11, align=Qt.AlignHCenter)
         self._text(painter, scale, 714, 374, "LOADING", accent, 10, bold=True)
         for column in range(2):
             self._box(painter, (712 + 142 * column, 386, 134, 22), p["surface"], None, 5)

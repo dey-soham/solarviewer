@@ -755,6 +755,7 @@ class SolarRadioImageTab(
                     self.stretch_combo.blockSignals(True)
                     self.stretch_combo.setCurrentText("linear")
                     self.stretch_combo.blockSignals(False)
+                    self.update_gamma_slider_state()
                 if hasattr(self, "gamma_entry"):
                     self.gamma_entry.blockSignals(True)
                     self.gamma_entry.setText("1.0")
@@ -946,9 +947,19 @@ class SolarRadioImageTab(
             self.show_status_message(f"Changed stretch to {stretch}")
 
     def update_gamma_slider_state(self):
-        is_power = self.stretch_combo.currentText() == "power"
+        """Grey what the stretch does not use: Gamma is the power
+        stretch's alone, and zscale finds its own range in the image,
+        whatever Min and Max say."""
+        stretch = self.stretch_combo.currentText()
+        is_power = stretch == "power"
         self.gamma_slider.setEnabled(is_power)
         self.gamma_entry.setEnabled(is_power)
+        uses_range = stretch != "zscale"
+        note = "Not used by zscale: it finds its own range in the image."
+        for widget, tip in getattr(self, "_range_controls", {}).items():
+            widget.setEnabled(uses_range)
+            if widget is not self.levels:
+                widget.setToolTip(tip if uses_range else f"{note}\n\n{tip}" if tip else note)
 
     def _on_theme_change(self, theme):
         """Handle theme change - update icons"""
@@ -1720,7 +1731,7 @@ class SolarRadioImageViewerApp(
         elif event.key() == Qt.Key_F7:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.apply_auto_range("median_rms")
+                current_tab.apply_auto_range("p01_999")
         else:
             super().keyPressEvent(event)
 

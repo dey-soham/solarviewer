@@ -51,6 +51,11 @@ def _spread_ticks(norm, vmin, vmax, most):
     low, high = min(vmin, vmax), max(vmin, vmax)
     if not (high > low):
         return [low]
+    # Histogram equalized: round values at even steps along it
+    even = getattr(norm, "even_ticks", None)
+    ticks = even(most) if callable(even) else None
+    if ticks and len(ticks) >= 2:
+        return ticks
     candidates = [t for t in MaxNLocator(nbins=most * 2).tick_values(low, high) if low <= t <= high]
     kept, last = [], None
     for tick in candidates:
@@ -136,6 +141,14 @@ RADIAL_LABELS = {
 COMPACT_CB_HEIGHT_PT = 6
 COMPACT_CB_GAP_PT = 5
 COMPACT_CB_TICKS = 5  # at most this many values along it
+
+
+def _drawn_range(norm, stretch, vmin, vmax):
+    """The range the image is drawn with: ZScale's own, else ``vmin``-``vmax``
+    (the Min and Max of the inspector)."""
+    if stretch == "zscale" and norm.scaled():
+        return norm.vmin, norm.vmax
+    return vmin, vmax
 
 
 class RenderingMixin:
@@ -607,7 +620,7 @@ class RenderingMixin:
         self._show_canvas_page()
         self._sync_levels(data, vmin_val, vmax_val)
 
-        norm = self._make_norm(stretch, vmin_val, vmax_val, gamma)
+        norm = self._make_norm(stretch, vmin_val, vmax_val, gamma, data)
         if self._try_fast_redraw(
             norm, cmap, stretch, gamma, vmin_val, vmax_val, tight_layout, preserve_view
         ):
@@ -620,7 +633,7 @@ class RenderingMixin:
         state = self._get_render_state(tight_layout=tight_layout)
         self.figure.clear()
         # Fresh norm for the new image (the one above may be attached to the old one)
-        norm = self._make_norm(stretch, vmin_val, vmax_val, gamma)
+        norm = self._make_norm(stretch, vmin_val, vmax_val, gamma, data)
 
         # Monkey patch removal if present
         if hasattr(self.figure, "_monkey_patched"):
@@ -658,11 +671,13 @@ class RenderingMixin:
 
         self._set_plot_title(ax, fits_flag, header, csys_record)
 
-        cb = self._add_colorbar(ax, im, stretch, vmin_val, vmax_val)
+        # The colorbar's range: ZScale finds its own, from the image
+        bar_min, bar_max = _drawn_range(norm, stretch, vmin_val, vmax_val)
+        cb = self._add_colorbar(ax, im, stretch, bar_min, bar_max)
 
         self._apply_plot_customization(ax, cb)
         if self.compact_plot:
-            self._make_compact(ax, cb, vmin_val, vmax_val)
+            self._make_compact(ax, cb, bar_min, bar_max)
 
         self._draw_beam(ax)
 
@@ -700,8 +715,16 @@ class RenderingMixin:
         self._shown_key = self.range_key()
 
     @staticmethod
-    def _make_norm(stretch, vmin, vmax, gamma):
-        """Matplotlib normalization for a stretch name."""
+    def _make_norm(stretch, vmin, vmax, gamma, data=None):
+        """Matplotlib normalization for a stretch name. ZScale and histeq
+        are fitted to ``data``, the image to be drawn, when it is given."""
+        norm = RenderingMixin._new_norm(stretch, vmin, vmax, gamma)
+        if data is not None and hasattr(norm, "fit"):
+            norm.fit(data)
+        return norm
+
+    @staticmethod
+    def _new_norm(stretch, vmin, vmax, gamma):
         if stretch == "log":
             safe_min = max(vmin, 1e-8)
             safe_max = max(vmax, safe_min * 1.01)
@@ -795,7 +818,9 @@ class RenderingMixin:
                         # so a compare pane's strip is styled again
                         self.colorbar.update_normal(self.image_plot)
                         if self.compact_plot and self.pane_colorbar:
-                            self._style_compact_colorbar(self.colorbar, fp_vmin, fp_vmax)
+                            self._style_compact_colorbar(
+                                self.colorbar, *_drawn_range(norm, stretch, fp_vmin, fp_vmax)
+                            )
                         elif stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
                             try:
                                 from ..processing.plot_style import drop_outside_ticks
@@ -1647,7 +1672,9 @@ class RenderingMixin:
         if getattr(self, "_range_preview", None) is None:
             return
         vmin, vmax = display_range(vmin, vmax)
-        norm = self._make_norm(self.stretch_combo.currentText(), vmin, vmax, self._current_gamma())
+        # (histeq equalizes on the whole image, as the full draw will)
+        full = self._range_preview[0]
+        norm = self._make_norm(self.stretch_combo.currentText(), vmin, vmax, self._current_gamma(), full)
         self.image_plot.set_norm(norm)
         self._blit_preview()
 
