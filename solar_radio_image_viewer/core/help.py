@@ -187,11 +187,28 @@ class HelpMixin:
         self._open_dialogs.append(dialog)
         dialog.show()
 
-    def show_tutorial(self):
-        """Show the comprehensive tutorial dialog."""
+    def show_tutorial(self, section=None):
+        """Show the tutorial (not in the Help menu for now), beside the main
+        window and not modal, so that its steps can be followed here: the one window
+        of it, brought to the front if it is open already. ``section``, a
+        section's id ("contours"), opens it there (a menu's ``checked``
+        is ignored). Returns the tutorial's window."""
         from ..tutorial import TutorialDialog
 
-        dialog = TutorialDialog(self)
+        if not isinstance(section, str):
+            section = None
+        dialog = next((d for d in self._open_dialogs if isinstance(d, TutorialDialog)), None)
+        if dialog is not None:
+            if section:
+                dialog.show_section(section)
+            if dialog.isMinimized():
+                dialog.showNormal()
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            return dialog
+
+        dialog = TutorialDialog(self, section)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(
             lambda: (
@@ -202,6 +219,7 @@ class HelpMixin:
         )
         self._open_dialogs.append(dialog)
         dialog.show()
+        return dialog
 
     # Keys and mouse gestures of the image, which no menu shows. Handled by
     # handle_view_key (R, 1, +, -, arrows, the tools' keys), the regions'
